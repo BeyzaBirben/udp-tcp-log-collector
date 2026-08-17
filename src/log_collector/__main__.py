@@ -1,5 +1,75 @@
+import argparse
+import asyncio
+import logging
+import signal
+
+from .models import LogRecord
+from .udp_server import start_udp_listener
+
+
+logger = logging.getLogger(__name__)
+
+
+def valid_port(value: str) -> int:
+    port = int(value)
+
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("Port must be between 1 and 65535")
+
+    return port
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="log-collector")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--udp-port", type=valid_port, default=5514)
+    return parser.parse_args()
+
+
+def write_record(record: LogRecord) -> None:
+    print(record.to_json(), flush=True)
+
+
+def register_shutdown_handlers(stop_event: asyncio.Event) -> None:
+    loop = asyncio.get_running_loop()
+
+    def request_shutdown() -> None:
+        stop_event.set()
+
+    for current_signal in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(current_signal, request_shutdown)
+        except NotImplementedError:
+            signal.signal(
+                current_signal,
+                lambda *_: loop.call_soon_threadsafe(request_shutdown),
+            )
+
+
+async def run_collector(host: str, udp_port: int) -> None:
+    stop_event = asyncio.Event()
+    register_shutdown_handlers(stop_event)
+
+    udp_transport = await start_udp_listener(
+        host=host,
+        port=udp_port,
+        record_handler=write_record,
+    )
+
+    try:
+        await stop_event.wait()
+    finally:
+        udp_transport.close()
+        await asyncio.sleep(0)
+
+
 def main() -> None:
-    print("Log collector project is ready.")
+    arguments = parse_arguments()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    asyncio.run(run_collector(arguments.host, arguments.udp_port))
 
 
 if __name__ == "__main__":
