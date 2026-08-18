@@ -1,0 +1,11 @@
+services:
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: udp-tcp-log-collector:local
+    init: true
+    ports:
+      - "5514:5514/tcp"
+      - "5514:5514/udp"
+    stop_grace_period: 10s
