@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "UDP and TCP based centralized log collection project"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "aio-pika>=10.0.1,<11",
+]
 
 [project.scripts]
 log-collector = "log_collector.__main__:main"

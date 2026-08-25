@@ -5,6 +5,7 @@ from log_collector.broker.interfaces import (
     MessageProducer,
 )
 from log_collector.broker.message import BrokerMessage
+from log_collector.broker.rabbitmq import RabbitMQConsumer, RabbitMQProducer
 
 
 __all__ = [
@@ -14,4 +15,6 @@ __all__ = [
     "BrokerSettings",
     "MessageConsumer",
     "MessageProducer",
+    "RabbitMQConsumer",
+    "RabbitMQProducer",
 ]
