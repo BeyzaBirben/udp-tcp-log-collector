@@ -3,7 +3,13 @@ import asyncio
 import logging
 import signal
 
+from .broker import BrokerSettings, MessageProducer
 from .models import LogRecord
+from .publishing import (
+    CollectorPublishingSettings,
+    LogBrokerPublisher,
+    create_message_producer,
+)
 from .tcp_server import start_tcp_listener
 from .udp_server import start_udp_listener
 
@@ -49,30 +55,59 @@ async def run_collector(
     host: str,
     udp_port: int,
     tcp_port: int,
+    *,
+    publishing_settings: CollectorPublishingSettings | None = None,
+    broker_settings: BrokerSettings | None = None,
+    message_producer: MessageProducer | None = None,
 ) -> None:
+    settings = publishing_settings or CollectorPublishingSettings.from_environment()
     stop_event = asyncio.Event()
     register_shutdown_handlers(stop_event)
+    publisher: LogBrokerPublisher | None = None
 
-    udp_transport = await start_udp_listener(
-        host=host,
-        port=udp_port,
-        record_handler=write_record,
-    )
+    if settings.broker_enabled:
+        active_broker_settings = broker_settings or BrokerSettings.from_environment()
+        active_producer = message_producer or create_message_producer(
+            active_broker_settings
+        )
+        publisher = LogBrokerPublisher(
+            producer=active_producer,
+            settings=settings,
+            reconnect_delay_seconds=active_broker_settings.reconnect_delay_seconds,
+        )
+        await publisher.start()
+
+    def handle_record(record: LogRecord) -> None:
+        if publisher is not None:
+            publisher.submit(record)
+
+        if settings.stdout_enabled:
+            write_record(record)
 
     try:
-        tcp_server = await start_tcp_listener(
+        udp_transport = await start_udp_listener(
             host=host,
-            port=tcp_port,
-            record_handler=write_record,
+            port=udp_port,
+            record_handler=handle_record,
         )
 
         try:
-            await stop_event.wait()
+            tcp_server = await start_tcp_listener(
+                host=host,
+                port=tcp_port,
+                record_handler=handle_record,
+            )
+
+            try:
+                await stop_event.wait()
+            finally:
+                await tcp_server.close()
         finally:
-            await tcp_server.close()
+            udp_transport.close()
+            await asyncio.sleep(0)
     finally:
-        udp_transport.close()
-        await asyncio.sleep(0)
+        if publisher is not None:
+            await publisher.close()
 
 
 def main() -> None:
