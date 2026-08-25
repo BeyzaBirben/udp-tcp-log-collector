@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aio-pika>=10.0.1,<11",
+    "aiokafka>=0.14.0,<1",
 ]
 
 [project.scripts]
