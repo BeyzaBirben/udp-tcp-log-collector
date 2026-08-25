@@ -4,6 +4,7 @@ from log_collector.broker.interfaces import (
     MessageConsumer,
     MessageProducer,
 )
+from log_collector.broker.kafka import KafkaConsumer, KafkaProducer, KafkaReceipt
 from log_collector.broker.message import BrokerMessage
 from log_collector.broker.rabbitmq import RabbitMQConsumer, RabbitMQProducer
 
@@ -13,6 +14,9 @@ __all__ = [
     "BrokerMessage",
     "BrokerProvider",
     "BrokerSettings",
+    "KafkaConsumer",
+    "KafkaProducer",
+    "KafkaReceipt",
     "MessageConsumer",
     "MessageProducer",
     "RabbitMQConsumer",
