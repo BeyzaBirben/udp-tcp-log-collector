@@ -1,0 +1,24 @@
+services:
+  broker:
+    image: rabbitmq:4-management
+    hostname: log-collector-rabbitmq
+    init: true
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_USERNAME:-logcollector}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASSWORD:-logcollector}"
+    ports:
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 15s
+    stop_grace_period: 30s
+
+volumes:
+  rabbitmq-data:
