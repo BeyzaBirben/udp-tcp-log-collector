@@ -1,11 +1,78 @@
+include:
+  - path: "compose.${BROKER_PROVIDER:-rabbitmq}.yaml"
+
+x-application: &application
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: udp-tcp-log-collector:local
+  init: true
+  restart: unless-stopped
+
+x-application-environment: &application-environment
+  BROKER_PROVIDER: "${BROKER_PROVIDER:-rabbitmq}"
+  RABBITMQ_URL: "amqp://${RABBITMQ_USERNAME:-logcollector}:${RABBITMQ_PASSWORD:-logcollector}@broker:5672/"
+  RABBITMQ_QUEUE: "${RABBITMQ_QUEUE:-raw-logs}"
+  KAFKA_BOOTSTRAP_SERVERS: "broker:19092"
+  KAFKA_TOPIC: "${KAFKA_TOPIC:-raw-logs}"
+  KAFKA_CONSUMER_GROUP: "${KAFKA_CONSUMER_GROUP:-log-consumers}"
+  BROKER_RECONNECT_DELAY_SECONDS: "${BROKER_RECONNECT_DELAY_SECONDS:-1.0}"
+  MONGODB_URI: "mongodb://database:27017/"
+  MONGODB_DATABASE: "${MONGODB_DATABASE:-log_collection}"
+  MONGODB_COLLECTION: "${MONGODB_COLLECTION:-raw_logs}"
+  MONGODB_SERVER_SELECTION_TIMEOUT_MS: "${MONGODB_SERVER_SELECTION_TIMEOUT_MS:-5000}"
+  MONGODB_MAX_POOL_SIZE: "${MONGODB_MAX_POOL_SIZE:-20}"
+
 services:
   collector:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: udp-tcp-log-collector:local
-    init: true
+    <<: *application
+    environment:
+      <<: *application-environment
+      COLLECTOR_BROKER_ENABLED: "true"
+      COLLECTOR_STDOUT_ENABLED: "${COLLECTOR_STDOUT_ENABLED:-true}"
+      COLLECTOR_PUBLISH_WORKERS: "${COLLECTOR_PUBLISH_WORKERS:-8}"
+      COLLECTOR_MAX_PENDING_MESSAGES: "${COLLECTOR_MAX_PENDING_MESSAGES:-0}"
+      COLLECTOR_SHUTDOWN_TIMEOUT_SECONDS: "${COLLECTOR_SHUTDOWN_TIMEOUT_SECONDS:-30}"
     ports:
-      - "5514:5514/tcp"
-      - "5514:5514/udp"
-    stop_grace_period: 10s
+      - "${COLLECTOR_PORT:-5514}:5514/tcp"
+      - "${COLLECTOR_PORT:-5514}:5514/udp"
+    depends_on:
+      broker:
+        condition: service_healthy
+      database:
+        condition: service_healthy
+    stop_grace_period: 45s
+
+  consumer:
+    <<: *application
+    command: ["log-consumer"]
+    environment:
+      <<: *application-environment
+      CONSUMER_BATCH_SIZE: "${CONSUMER_BATCH_SIZE:-500}"
+      CONSUMER_BATCH_TIMEOUT_SECONDS: "${CONSUMER_BATCH_TIMEOUT_SECONDS:-1.0}"
+      CONSUMER_RETRY_DELAY_SECONDS: "${CONSUMER_RETRY_DELAY_SECONDS:-1.0}"
+    depends_on:
+      broker:
+        condition: service_healthy
+      database:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+  database:
+    image: mongo:8.0
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MONGODB_PORT:-27017}:27017"
+    volumes:
+      - mongodb-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    stop_grace_period: 30s
+
+volumes:
+  mongodb-data:
