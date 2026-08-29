@@ -17,30 +17,44 @@ class TransportConcurrencyIntegrationTests(
 
     async def asyncSetUp(self) -> None:
         self.records = asyncio.Queue()
-        self.tcp_server = await start_tcp_listener(
-            host="127.0.0.1",
-            port=0,
-            record_handler=self.records.put_nowait,
-        )
+        last_error: OSError | None = None
 
-        server = self.tcp_server.server
-
-        if server is None or not server.sockets:
-            self.fail("TCP listener address is unavailable")
-
-        self.listener_port = int(
-            server.sockets[0].getsockname()[1]
-        )
-
-        try:
-            self.udp_transport = await start_udp_listener(
+        for _ in range(50):
+            udp_transport = await start_udp_listener(
                 host="127.0.0.1",
-                port=self.listener_port,
+                port=0,
                 record_handler=self.records.put_nowait,
             )
-        except Exception:
-            await self.tcp_server.close()
-            raise
+
+            listener_address = udp_transport.get_extra_info("sockname")
+
+            if listener_address is None:
+                udp_transport.close()
+                await asyncio.sleep(0)
+                self.fail("UDP listener address is unavailable")
+
+            listener_port = int(listener_address[1])
+
+            try:
+                tcp_server = await start_tcp_listener(
+                    host="127.0.0.1",
+                    port=listener_port,
+                    record_handler=self.records.put_nowait,
+                )
+            except OSError as error:
+                last_error = error
+                udp_transport.close()
+                await asyncio.sleep(0)
+                continue
+
+            self.udp_transport = udp_transport
+            self.tcp_server = tcp_server
+            self.listener_port = listener_port
+            return
+
+        raise RuntimeError(
+            "A shared TCP and UDP port is unavailable"
+        ) from last_error
 
     async def asyncTearDown(self) -> None:
         await self.tcp_server.close()
