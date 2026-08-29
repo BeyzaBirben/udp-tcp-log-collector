@@ -1,321 +1,704 @@
-# UDP/TCP Log Collector
+UDP/TCP Log Collection Pipeline
 
-A containerized log transport service that collects raw log messages over UDP and TCP while preserving the original payload and socket peer address.
+A containerized log collection pipeline that receives raw log messages over UDP and TCP, publishes them through either RabbitMQ or Kafka, and persists them to MongoDB through independently scalable consumers.
 
-This milestone focuses exclusively on reliable transport and collection. Log parsing, persistence, APIs, visualization, correlation rules, and alerting are planned as separate project stages.
+The pipeline preserves the original payload and socket peer metadata without parsing or normalization. Broker selection is configuration-driven and does not require source-code changes.
 
-## Features
+Features
 
-* Listens for UDP and TCP traffic simultaneously
-* Uses the same configurable port number for both protocols
-* Preserves raw log bytes without parsing or normalization
-* Records the source IP and source port from the socket connection
-* Supports multiple concurrent TCP clients
-* Isolates TCP client failures from other active connections
-* Uses newline-delimited framing for TCP messages
-* Produces structured JSON records on standard output
-* Provides lossless Base64 representation of each payload
-* Shuts down cleanly on `SIGINT` and `SIGTERM`
-* Runs as a non-root user inside Docker
-* Starts through Docker Compose
-* Includes local and container-level integration tests
+Listens for UDP and TCP traffic simultaneously on the same configurable port number
 
-## Architecture
+Preserves raw bytes, source IP, source port, protocol, and receive timestamp
 
-```mermaid
-flowchart LR
-    UDP[UDP Clients] -->|Datagrams| UL[UDP Listener]
-    TCP[TCP Clients] -->|Newline-delimited frames| TL[TCP Listener]
-    UL --> LR[LogRecord]
-    TL --> LR
-    LR --> JSON[JSON Lines on Standard Output]
-```
+Uses newline-delimited framing for TCP messages
 
-UDP datagrams are treated as individual log records. TCP is a byte stream, so a newline character marks the end of each log record.
+Supports multiple concurrent TCP clients without cross-client failure propagation
 
-## Log Record Format
+Selects RabbitMQ or Kafka through BROKER_PROVIDER
 
-Each received log is emitted as a JSON object:
+Keeps transport listeners independent from broker implementations
 
-```json
+Publishes persistent, confirmed messages to RabbitMQ
+
+Uses acknowledged, idempotent production with Kafka
+
+Runs a separate consumer service that writes batches to MongoDB
+
+Acknowledges broker messages only after a successful database write
+
+Uses idempotent MongoDB upserts to prevent duplicate persistence
+
+Scales the consumer service to multiple replicas
+
+Reconnects after broker, collector, or consumer interruptions
+
+Starts the complete stack through Docker Compose
+
+Includes unit, socket, container, real-pipeline, recovery, and benchmark coverage
+
+Architecture
+
+flowchart TD
+    UDP[UDP clients] --> Collector[Log collector]
+    TCP[TCP clients] --> Collector
+    Collector --> Broker["RabbitMQ or Kafka"]
+    Broker --> Consumers["Consumer replicas"]
+    Consumers --> MongoDB[(MongoDB)]
+
+The collector never writes directly to MongoDB. Every persisted benchmark and integration-test record follows this path:
+
+UDP/TCP -> Collector -> Broker -> Consumer -> MongoDB
+
+Component
+
+Responsibility
+
+UDP listener
+
+Treats each datagram as one raw log record
+
+TCP listener
+
+Treats each newline-delimited frame as one raw log record
+
+Collector publisher
+
+Converts transport records to broker messages and retries failed publishing
+
+RabbitMQ or Kafka
+
+Buffers and distributes messages independently from the collector
+
+Consumer
+
+Receives broker messages in batches and coordinates persistence acknowledgements
+
+MongoDB repository
+
+Performs durable, idempotent batch upserts
+
+Delivery Model
+
+The collector preserves every payload it receives, including non-UTF-8 byte sequences. Human-readable text is included for inspection, while Base64 and BSON binary fields preserve the original bytes exactly.
+
+RabbitMQ uses durable queues, persistent messages, publisher confirmations, manual consumer acknowledgements, and requeue-on-failure behavior.
+
+Kafka uses acks=all, an idempotent producer, three topic partitions, consumer groups, manual offset commits, and offset rewind on processing failure.
+
+MongoDB uses majority and journaled writes. Each message UUID is also the MongoDB document identifier, and repeated broker deliveries use an idempotent upsert rather than creating duplicate documents.
+
+UDP itself does not provide delivery acknowledgements or transport-level retransmission. The benchmark therefore uses controlled UDP pacing to avoid overflowing the Docker Desktop forwarding path while measuring the complete application pipeline.
+
+Broker Message Format
+
+Every broker message contains a schema version, unique message identifier, transport metadata, and two representations of the original payload:
+
 {
-  "received_at": "2026-08-18T07:44:48.939865+00:00",
+  "schemaVersion": 1,
+  "messageId": "6ef5b79d-27ae-43f6-b934-3aa596932e36",
+  "receivedAt": "2026-08-29T10:35:56.123456Z",
   "protocol": "UDP",
-  "source_ip": "172.19.0.1",
-  "source_port": 59669,
-  "raw_log_text": "container-udp-test",
-  "raw_log_base64": "Y29udGFpbmVyLXVkcC10ZXN0",
-  "raw_log_size": 18
+  "sourceIp": "172.19.0.1",
+  "sourcePort": 59669,
+  "rawLog": "container-udp-test",
+  "rawLogBase64": "Y29udGFpbmVyLXVkcC10ZXN0",
+  "rawLogSize": 18
 }
-```
 
-| Field            | Description                                          |
-| ---------------- | ---------------------------------------------------- |
-| `received_at`    | UTC timestamp recorded when the payload is received  |
-| `protocol`       | Transport protocol, either `UDP` or `TCP`            |
-| `source_ip`      | Actual peer IP reported by the socket                |
-| `source_port`    | Actual peer port reported by the socket              |
-| `raw_log_text`   | Human-readable UTF-8 representation                  |
-| `raw_log_base64` | Lossless Base64 representation of the original bytes |
-| `raw_log_size`   | Original payload size in bytes                       |
+Field
 
-`raw_log_text` is provided for readability. `raw_log_base64` is the lossless representation and must be used when the original bytes need to be reconstructed exactly.
+Description
 
-## Requirements
+schemaVersion
+
+Message-contract version, currently 1
+
+messageId
+
+UUID retained across publish retries and broker redelivery
+
+receivedAt
+
+UTC timestamp captured when the collector received the log
+
+protocol
+
+UDP or TCP
+
+sourceIp
+
+Peer IP reported by the socket
+
+sourcePort
+
+Peer port reported by the socket
+
+rawLog
+
+Readable UTF-8 representation with replacement for invalid sequences
+
+rawLogBase64
+
+Lossless Base64 representation of the original bytes
+
+rawLogSize
+
+Original payload size in bytes
+
+MongoDB stores the same fields and adds rawLogBytes as BSON binary data. The document _id equals messageId.
+
+Requirements
 
 For local execution:
 
-* Python 3.12 or newer
+Python 3.12 or newer
 
-For container execution:
+For the complete pipeline:
 
-* Docker
-* Docker Compose
+Docker Desktop or Docker Engine
 
-## Local Installation
+Docker Compose v2
+
+Local Installation
 
 Clone the repository:
 
-```powershell
 git clone https://github.com/BeyzaBirben/udp-tcp-log-collector.git
 Set-Location udp-tcp-log-collector
-```
 
 Create and activate a virtual environment on Windows:
 
-```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-```
 
 On Linux or macOS:
 
-```bash
 python3 -m venv .venv
 source .venv/bin/activate
-```
 
 Install the project in editable mode:
 
-```powershell
 python -m pip install --editable .
-```
 
-## Running Locally
+Running the Transport Layer Locally
 
-Start the UDP and TCP listeners:
+Run the listeners with structured standard output and no external broker requirement:
 
-```powershell
 log-collector --host 0.0.0.0 --udp-port 5514 --tcp-port 5514
-```
 
-Use `127.0.0.1` instead of `0.0.0.0` when the service should accept traffic only from the local machine.
+Use 127.0.0.1 instead of 0.0.0.0 when traffic should be accepted only from the local machine. Stop the process with Ctrl+C.
 
-Stop the application with `Ctrl+C`.
+Running the Complete Pipeline
 
-## Running with Docker Compose
+RabbitMQ is the default provider. Set it explicitly and start the stack:
 
-Build and start the service:
-
-```powershell
+$env:BROKER_PROVIDER = "rabbitmq"
 docker compose up --build -d
-```
 
-Check its state:
+Start the Kafka stack without changing application code:
 
-```powershell
-docker compose ps
-```
+docker compose down --remove-orphans
+$env:BROKER_PROVIDER = "kafka"
+docker compose up --build -d
 
-Follow collector output:
+Inspect the services:
 
-```powershell
-docker compose logs -f collector
-```
+docker compose ps -a
 
-The Compose configuration publishes both transports:
+Follow application logs:
 
-* `5514/tcp`
-* `5514/udp`
+docker compose logs -f collector consumer
 
-Stop the container:
+Scale the consumer service to three replicas:
 
-```powershell
-docker compose stop
-```
+docker compose up -d --scale consumer=3
 
-Remove the container and Compose network:
+Stop the complete stack while preserving named volumes:
 
-```powershell
-docker compose down
-```
+docker compose down --remove-orphans
 
-The local application and Docker container cannot listen on the same host ports at the same time.
+Clear the provider variable when it is no longer needed:
 
-## Sending UDP Traffic
+Remove-Item Env:BROKER_PROVIDER
+
+The local application and Docker collector cannot bind the same host ports at the same time.
+
+Docker Compose Services
+
+Service
+
+Image or command
+
+Purpose
+
+collector
+
+log-collector
+
+Receives UDP/TCP and publishes to the selected broker
+
+consumer
+
+log-consumer
+
+Consumes batches and writes to MongoDB
+
+broker
+
+RabbitMQ 4 or Kafka 4.3
+
+Selected message broker
+
+database
+
+MongoDB 8
+
+Durable raw-log persistence
+
+kafka-init
+
+Kafka image
+
+Initializes Kafka volume permissions and then exits
+
+The collector publishes both 5514/tcp and 5514/udp. MongoDB and broker administration ports are bound to localhost.
+
+Core Configuration
+
+Variable
+
+Default
+
+Purpose
+
+BROKER_PROVIDER
+
+rabbitmq
+
+Selects rabbitmq or kafka
+
+RABBITMQ_QUEUE
+
+raw-logs
+
+Durable RabbitMQ queue name
+
+KAFKA_TOPIC
+
+raw-logs
+
+Kafka topic name
+
+KAFKA_CONSUMER_GROUP
+
+log-consumers
+
+Kafka consumer group
+
+BROKER_RECONNECT_DELAY_SECONDS
+
+1.0
+
+Delay between reconnect attempts
+
+COLLECTOR_PUBLISH_WORKERS
+
+8
+
+Concurrent broker publishing workers
+
+COLLECTOR_MAX_PENDING_MESSAGES
+
+0
+
+In-memory queue limit; 0 is unbounded
+
+COLLECTOR_STDOUT_ENABLED
+
+true
+
+Enables structured collector output
+
+CONSUMER_BATCH_SIZE
+
+500
+
+Maximum messages per database batch
+
+CONSUMER_BATCH_TIMEOUT_SECONDS
+
+1.0
+
+Maximum wait for a consumer batch
+
+MONGODB_DATABASE
+
+log_collection
+
+MongoDB database name
+
+MONGODB_COLLECTION
+
+raw_logs
+
+MongoDB collection name
+
+Sending UDP Traffic
 
 Send one UDP log:
 
-```powershell
 python scripts\send_udp.py --message "CEF:0|TestVendor|TestProduct|1.0|100|UDP test|1|clientId=udp-001"
-```
 
 Send multiple UDP logs:
 
-```powershell
 python scripts\send_udp.py --message "UDP load test" --count 5
-```
 
-## Sending TCP Traffic
+Sending TCP Traffic
 
 Send one TCP log:
 
-```powershell
 python scripts\send_tcp.py --message "CEF:0|TestVendor|TestProduct|1.0|200|TCP test|1|clientId=tcp-001"
-```
 
 Send multiple logs over one TCP connection:
 
-```powershell
 python scripts\send_tcp.py --message "TCP test" --count 5
-```
 
-Each TCP message is terminated with a newline before transmission.
+Each TCP message is terminated with a newline before transmission. The framing newline is transport metadata and is not stored in the raw payload.
 
-## TCP Load Generator
+TCP Load Generator
 
-Run one client:
+Run 1, 5, or 20 concurrent clients:
 
-```powershell
 python scripts\tcp_load.py --clients 1 --messages-per-client 1
-```
-
-Run five concurrent clients:
-
-```powershell
 python scripts\tcp_load.py --clients 5 --messages-per-client 1
-```
-
-Run twenty concurrent clients:
-
-```powershell
 python scripts\tcp_load.py --clients 20 --messages-per-client 1
-```
 
 Disconnect client 3 after its first complete message:
 
-```powershell
 python scripts\tcp_load.py --clients 5 --messages-per-client 2 --disconnect-client 3 --disconnect-after 1
-```
 
-The load generator prints a JSON summary containing client identifiers, local source addresses, completed message counts, and disconnected clients.
+Standard Test Suite
 
-## Standard Integration Tests
+Run the unit and socket-level integration tests:
 
-Run the socket-level integration tests:
-
-```powershell
 python -m unittest discover -s tests -v
-```
 
-These tests run without starting Docker. Container tests are skipped unless they are explicitly enabled.
+The verified suite contains 188 tests. With Docker-backed suites disabled, 14 opt-in tests are skipped.
 
-## Container Integration Tests
+Container Integration Tests
 
-Ensure Docker Desktop or the Docker Engine is running.
-
-On PowerShell:
-
-```powershell
 $env:RUN_CONTAINER_TESTS = "1"
 python -m unittest tests.integration.test_containerized_collector -v
 Remove-Item Env:RUN_CONTAINER_TESTS
-```
 
-On Linux or macOS:
+Real Broker Pipeline Tests
 
-```bash
-RUN_CONTAINER_TESTS=1 python -m unittest tests.integration.test_containerized_collector -v
-```
+Run the same five scenarios against RabbitMQ and Kafka:
 
-The container test suite manages its own lifecycle. It builds the image, starts the collector, sends real network traffic from outside the container, validates the results, and removes the test container and network.
+$env:RUN_PIPELINE_TESTS = "1"
+$env:BROKER_PROVIDER = "rabbitmq"
+python -m unittest tests.integration.test_broker_pipeline -v
+$env:BROKER_PROVIDER = "kafka"
+python -m unittest tests.integration.test_broker_pipeline -v
+Remove-Item Env:RUN_PIPELINE_TESTS
+Remove-Item Env:BROKER_PROVIDER
 
-## Test Coverage
+These tests verify:
 
-| Scenario                | Verification                                                       |
-| ----------------------- | ------------------------------------------------------------------ |
-| Single UDP packet       | Raw bytes, protocol, source IP, source port, and Base64 round-trip |
-| Concurrent TCP clients  | 1, 5, and 20 simultaneous client connections                       |
-| Client disconnection    | Remaining TCP clients continue after one connection is aborted     |
-| Simultaneous transports | UDP and TCP traffic are processed at the same time                 |
-| Container traffic       | Real host-to-container UDP and TCP traffic                         |
-| Graceful shutdown       | Listener shutdown messages and exit code `0`                       |
-| Port release            | TCP and UDP ports can be bound again after shutdown                |
-| Restart                 | Container restarts on the same ports and processes new traffic     |
+Lossless UDP persistence with complete metadata
 
-## Project Structure
+Lossless TCP persistence
 
-```text
+Concurrent UDP and TCP processing
+
+1, 5, and 20 concurrent TCP clients
+
+Three consumer replicas without duplicate MongoDB documents
+
+Recovery Tests
+
+Run the four interruption scenarios against both providers:
+
+$env:RUN_RECOVERY_TESTS = "1"
+$env:BROKER_PROVIDER = "rabbitmq"
+python -m unittest tests.integration.test_broker_recovery -v
+$env:BROKER_PROVIDER = "kafka"
+python -m unittest tests.integration.test_broker_recovery -v
+Remove-Item Env:RUN_RECOVERY_TESTS
+Remove-Item Env:BROKER_PROVIDER
+
+The recovery suite verifies that:
+
+Messages wait in the broker while the consumer is stopped
+
+The collector reconnects after a broker restart without uncontrolled termination
+
+Restarting the collector does not interrupt the broker or consumer
+
+Pending messages survive a consumer restart and persist without duplicates
+
+Benchmark
+
+The benchmark manages the Compose lifecycle, creates isolated broker destinations, sends real host-to-container traffic, validates MongoDB contents, and samples Docker CPU and memory usage.
+
+Run the default 20-client workload:
+
+python scripts\pipeline_benchmark.py --provider rabbitmq
+python scripts\pipeline_benchmark.py --provider kafka
+
+Run the constant 25,000-log workload with 1, 5, and 20 TCP clients:
+
+python scripts\pipeline_benchmark.py --provider rabbitmq --tcp-clients 1 --skip-build
+python scripts\pipeline_benchmark.py --provider rabbitmq --tcp-clients 5 --skip-build
+python scripts\pipeline_benchmark.py --provider rabbitmq --tcp-clients 20 --skip-build
+python scripts\pipeline_benchmark.py --provider kafka --tcp-clients 1 --skip-build
+python scripts\pipeline_benchmark.py --provider kafka --tcp-clients 5 --skip-build
+python scripts\pipeline_benchmark.py --provider kafka --tcp-clients 20 --skip-build
+
+Benchmark Method
+
+20,000 TCP logs divided across the selected number of clients
+
+5,000 UDP logs sent at 250 messages per second with a burst size of 1
+
+25,000 total unique logs
+
+Three consumer replicas
+
+Consumer batch size of 500
+
+Collector standard output disabled during measurement
+
+Docker resource sampling for collector, broker, consumers, and MongoDB
+
+Exact payload, protocol, message-ID, missing-record, and duplicate validation
+
+Results
+
+All six final runs persisted exactly 25,000 of 25,000 records.
+
+Provider
+
+TCP clients
+
+Duration (s)
+
+Logs/s
+
+Average CPU (%)
+
+Average memory (MiB)
+
+RabbitMQ
+
+1
+
+20.181
+
+1,238.786
+
+773.649
+
+793.019
+
+RabbitMQ
+
+5
+
+20.238
+
+1,235.280
+
+729.134
+
+621.504
+
+RabbitMQ
+
+20
+
+21.111
+
+1,184.200
+
+776.598
+
+615.145
+
+Kafka
+
+1
+
+23.990
+
+1,042.109
+
+495.899
+
+1,057.601
+
+Kafka
+
+5
+
+24.296
+
+1,028.966
+
+548.237
+
+1,019.961
+
+Kafka
+
+20
+
+24.388
+
+1,025.080
+
+527.862
+
+923.063
+
+CPU values are summed Docker service averages and may exceed 100 percent because Docker reports multi-core CPU usage. Memory values are summed service averages for the complete stack.
+
+Under this controlled workload, RabbitMQ produced 15.5 to 20.1 percent higher end-to-end throughput. It used more aggregate CPU, while Kafka used more aggregate memory. These measurements describe this Compose topology and host environment; they are not universal broker performance claims.
+
+Raw benchmark data is stored under benchmark-results. The detailed methodology and acceptance evidence are documented in docs/week-two-results.md.
+
+Test Coverage Summary
+
+Requirement
+
+Evidence
+
+UDP through broker to MongoDB
+
+Real pipeline test passes with exact bytes and metadata
+
+TCP through broker to MongoDB
+
+Real pipeline test passes for every sent frame
+
+Concurrent UDP and TCP
+
+Both transports persist without blocking each other
+
+Multiple TCP clients
+
+1, 5, and 20 client scenarios pass
+
+Consumer unavailable
+
+Messages remain pending and persist after restart
+
+Broker unavailable
+
+Collector remains active and reconnects
+
+Collector restart
+
+Broker and consumer remain independent
+
+Consumer restart
+
+Pending messages persist without duplicates
+
+Batch insertion
+
+Consumer uses MongoDB bulk writes with batches up to 500
+
+Three consumers
+
+Scaling test persists each unique message exactly once
+
+RabbitMQ and Kafka
+
+The same application and test suites pass with both providers
+
+25,000-log benchmark
+
+Six client/provider combinations persist all records
+
+Project Structure
+
 .
-├── scripts
-│   ├── send_tcp.py
-│   ├── send_udp.py
-│   └── tcp_load.py
-├── src
-│   └── log_collector
-│       ├── __init__.py
-│       ├── __main__.py
-│       ├── models.py
-│       ├── tcp_server.py
-│       └── udp_server.py
-├── tests
-│   └── integration
-│       ├── test_containerized_collector.py
-│       ├── test_transport_concurrency.py
-│       └── test_udp_listener.py
-├── .dockerignore
-├── Dockerfile
-├── compose.yaml
-├── pyproject.toml
-└── README.md
-```
+|-- benchmark-results
+|   |-- diagnostics
+|   `-- final
+|-- docs
+|   `-- week-two-results.md
+|-- scripts
+|   |-- pipeline_benchmark.py
+|   |-- send_tcp.py
+|   |-- send_udp.py
+|   `-- tcp_load.py
+|-- src
+|   `-- log_collector
+|       |-- broker
+|       |   |-- config.py
+|       |   |-- interfaces.py
+|       |   |-- kafka.py
+|       |   |-- message.py
+|       |   `-- rabbitmq.py
+|       |-- __main__.py
+|       |-- consumer.py
+|       |-- models.py
+|       |-- publishing.py
+|       |-- storage.py
+|       |-- tcp_server.py
+|       `-- udp_server.py
+|-- tests
+|   |-- integration
+|   `-- unit
+|-- compose.kafka.yaml
+|-- compose.rabbitmq.yaml
+|-- compose.yaml
+|-- Dockerfile
+|-- pyproject.toml
+`-- README.md
 
-## Design Decisions
+Design Decisions
 
-### Raw payload preservation
+Raw payload preservation
 
-The transport layer does not parse or modify the received log. Original bytes are retained and represented through Base64 when serialized to JSON.
+The transport layer does not parse or normalize received logs. Base64 and BSON binary values preserve original bytes even when a payload is not valid UTF-8.
 
-### Socket peer address
+Socket peer address
 
-The collector uses the address reported by the UDP datagram or TCP connection. It does not trust an IP address written inside the log payload.
+The collector records the address reported by the socket and does not trust an IP address embedded in a payload. Through Docker Desktop, the visible peer may be the Docker network gateway rather than 127.0.0.1.
 
-When traffic passes through Docker Desktop, the collector may see the Docker network gateway address instead of `127.0.0.1`. This is the actual peer address visible from inside the container.
+Broker abstraction
 
-### TCP connection isolation
+Transport listeners submit provider-independent messages. Broker factories select RabbitMQ or Kafka from configuration, so listeners and MongoDB persistence do not change when the provider changes.
 
-Every TCP connection is handled independently. An error or abrupt disconnection in one client does not terminate the listener or interrupt other connected clients.
+Backpressure and recovery
 
-### TCP framing
+The collector queues records for asynchronous publishing and retries the same message identifier after transient broker failures. A configurable pending-message limit can be used when bounded memory is preferred.
 
-TCP does not preserve message boundaries. The collector therefore treats each newline-delimited frame as one log record. The framing newline is transport metadata and is not included in the stored raw payload.
+Database acknowledgement order
 
-### Graceful shutdown
+Consumers acknowledge RabbitMQ deliveries or commit Kafka offsets only after MongoDB confirms the batch. Failed writes cause requeue or offset rewind.
 
-The application handles termination signals, closes active TCP clients, stops both listeners, and releases their ports before exiting.
+Duplicate protection
 
-### Container security
+MongoDB upserts use messageId as _id, supported by a unique message-ID index. Broker redelivery therefore does not create a second document.
 
-The Docker image runs the application as the unprivileged `collector` user. Port `5514` is used so the process does not require privileged port access.
+Container security and lifecycle
 
-## Current Milestone Boundary
+Application containers run as an unprivileged user. Health checks, named volumes, restart policies, initialization, and graceful stop periods are defined through Compose.
 
-This milestone establishes the collection and transport layer. The following capabilities belong to later milestones:
+Current Milestone Boundary
 
-* Log parsing and normalization
-* Message broker integration
-* Database persistence
-* Query API
-* Web or mobile visualization
-* Correlation rules
-* Alert generation
+The transport, broker, consumer, persistence, recovery, scaling, and benchmark stages are complete. Planned stages include:
+
+Log parsing and normalization
+
+Query API development
+
+Web or mobile visualization
+
+Correlation rules
+
+Alert generation
