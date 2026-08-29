@@ -1,0 +1,80 @@
+{
+  "benchmarkId": "benchmark-rabbitmq-28bee6a14af446f2afb90517e41edd96",
+  "provider": "rabbitmq",
+  "startedAt": "2026-08-29T10:57:46.502877+00:00",
+  "completedAt": "2026-08-29T10:58:06.741213+00:00",
+  "configuration": {
+    "tcpMessages": 20000,
+    "udpMessages": 5000,
+    "tcpClients": 5,
+    "consumerReplicas": 3,
+    "udpMessagesPerSecond": 250.0,
+    "udpBurstSize": 1,
+    "idleTimeoutSeconds": 15.0,
+    "resourceSampleIntervalSeconds": 0.5,
+    "brokerDestination": "benchmark-raw-logs-28bee6a14af446f2afb90517e41edd96"
+  },
+  "counts": {
+    "expected": 25000,
+    "persisted": 25000,
+    "tcpPersisted": 20000,
+    "udpPersisted": 5000,
+    "missing": 0,
+    "unexpected": 0,
+    "duplicatePayloads": 0,
+    "duplicateMessageIds": 0
+  },
+  "timingsSeconds": {
+    "send": 20.024933,
+    "brokerAndDatabaseDrain": 0.213402,
+    "endToEnd": 20.238335
+  },
+  "throughputLogsPerSecond": {
+    "send": 1248.444,
+    "endToEnd": 1235.28
+  },
+  "resourcesByService": {
+    "broker": {
+      "sampleCount": 10,
+      "containerCount": 1,
+      "averageCpuPercent": 289.821,
+      "peakCpuPercent": 736.11,
+      "averageMemoryMiB": 160.98,
+      "peakMemoryMiB": 228.3
+    },
+    "collector": {
+      "sampleCount": 10,
+      "containerCount": 1,
+      "averageCpuPercent": 86.809,
+      "peakCpuPercent": 100.08,
+      "averageMemoryMiB": 36.653,
+      "peakMemoryMiB": 36.88
+    },
+    "consumer": {
+      "sampleCount": 10,
+      "containerCount": 3,
+      "averageCpuPercent": 232.209,
+      "peakCpuPercent": 275.65,
+      "averageMemoryMiB": 102.391,
+      "peakMemoryMiB": 103.13
+    },
+    "database": {
+      "sampleCount": 10,
+      "containerCount": 1,
+      "averageCpuPercent": 120.295,
+      "peakCpuPercent": 194.87,
+      "averageMemoryMiB": 321.48,
+      "peakMemoryMiB": 341.5
+    }
+  },
+  "resourceMonitoringErrors": [],
+  "validation": {
+    "passed": true,
+    "noDataLoss": true,
+    "noUnexpectedPayloads": true,
+    "noDuplicatePayloads": true,
+    "noDuplicateMessageIds": true,
+    "protocolCountsMatch": true,
+    "resourceMetricsAvailable": true
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "benchmarkId": "benchmark-kafka-002df2464a654b08af947f61b848db13",
+  "provider": "kafka",
+  "startedAt": "2026-08-29T11:00:02.380496+00:00",
+  "completedAt": "2026-08-29T11:00:26.676733+00:00",
+  "configuration": {
+    "tcpMessages": 20000,
+    "udpMessages": 5000,
+    "tcpClients": 5,
+    "consumerReplicas": 3,
+    "udpMessagesPerSecond": 250.0,
+    "udpBurstSize": 1,
+    "idleTimeoutSeconds": 15.0,
+    "resourceSampleIntervalSeconds": 0.5,
+    "brokerDestination": "benchmark-raw-logs-002df2464a654b08af947f61b848db13"
+  },
+  "counts": {
+    "expected": 25000,
+    "persisted": 25000,
+    "tcpPersisted": 20000,
+    "udpPersisted": 5000,
+    "missing": 0,
+    "unexpected": 0,
+    "duplicatePayloads": 0,
+    "duplicateMessageIds": 0
+  },
+  "timingsSeconds": {
+    "send": 20.020657,
+    "brokerAndDatabaseDrain": 4.275582,
+    "endToEnd": 24.296239
+  },
+  "throughputLogsPerSecond": {
+    "send": 1248.71,
+    "endToEnd": 1028.966
+  },
+  "resourcesByService": {
+    "broker": {
+      "sampleCount": 12,
+      "containerCount": 1,
+      "averageCpuPercent": 294.918,
+      "peakCpuPercent": 489.1,
+      "averageMemoryMiB": 526.45,
+      "peakMemoryMiB": 734.9
+    },
+    "collector": {
+      "sampleCount": 12,
+      "containerCount": 1,
+      "averageCpuPercent": 36.042,
+      "peakCpuPercent": 47.3,
+      "averageMemoryMiB": 36.665,
+      "peakMemoryMiB": 36.98
+    },
+    "consumer": {
+      "sampleCount": 12,
+      "containerCount": 3,
+      "averageCpuPercent": 128.59,
+      "peakCpuPercent": 156.77,
+      "averageMemoryMiB": 102.063,
+      "peakMemoryMiB": 102.3
+    },
+    "database": {
+      "sampleCount": 12,
+      "containerCount": 1,
+      "averageCpuPercent": 88.687,
+      "peakCpuPercent": 230.38,
+      "averageMemoryMiB": 354.783,
+      "peakMemoryMiB": 376.5
+    }
+  },
+  "resourceMonitoringErrors": [],
+  "validation": {
+    "passed": true,
+    "noDataLoss": true,
+    "noUnexpectedPayloads": true,
+    "noDuplicatePayloads": true,
+    "noDuplicateMessageIds": true,
+    "protocolCountsMatch": true,
+    "resourceMetricsAvailable": true
+  }
+}
