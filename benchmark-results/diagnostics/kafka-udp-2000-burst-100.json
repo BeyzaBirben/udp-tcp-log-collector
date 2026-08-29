@@ -1,0 +1,78 @@
+{
+  "benchmarkId": "benchmark-kafka-67e32d71f38d427893c7c0a84ebd70df",
+  "provider": "kafka",
+  "startedAt": "2026-08-29T10:20:04.644262+00:00",
+  "completedAt": "2026-08-29T10:25:07.272587+00:00",
+  "configuration": {
+    "tcpMessages": 20000,
+    "udpMessages": 5000,
+    "tcpClients": 20,
+    "consumerReplicas": 3,
+    "udpMessagesPerSecond": 2000.0,
+    "resourceSampleIntervalSeconds": 0.5,
+    "brokerDestination": "benchmark-raw-logs-67e32d71f38d427893c7c0a84ebd70df"
+  },
+  "counts": {
+    "expected": 25000,
+    "persisted": 23841,
+    "tcpPersisted": 20000,
+    "udpPersisted": 3841,
+    "missing": 1159,
+    "unexpected": 0,
+    "duplicatePayloads": 0,
+    "duplicateMessageIds": 0
+  },
+  "timingsSeconds": {
+    "send": 2.540906,
+    "brokerAndDatabaseDrain": 300.087422,
+    "endToEnd": 302.628328
+  },
+  "throughputLogsPerSecond": {
+    "send": 9839.011,
+    "endToEnd": 78.78
+  },
+  "resourcesByService": {
+    "broker": {
+      "sampleCount": 149,
+      "containerCount": 1,
+      "averageCpuPercent": 76.505,
+      "peakCpuPercent": 422.06,
+      "averageMemoryMiB": 642.852,
+      "peakMemoryMiB": 755.9
+    },
+    "collector": {
+      "sampleCount": 149,
+      "containerCount": 1,
+      "averageCpuPercent": 2.395,
+      "peakCpuPercent": 63.74,
+      "averageMemoryMiB": 33.537,
+      "peakMemoryMiB": 37.47
+    },
+    "consumer": {
+      "sampleCount": 149,
+      "containerCount": 3,
+      "averageCpuPercent": 10.859,
+      "peakCpuPercent": 137.28,
+      "averageMemoryMiB": 101.835,
+      "peakMemoryMiB": 102.57
+    },
+    "database": {
+      "sampleCount": 149,
+      "containerCount": 1,
+      "averageCpuPercent": 32.35,
+      "peakCpuPercent": 180.21,
+      "averageMemoryMiB": 262.013,
+      "peakMemoryMiB": 413.2
+    }
+  },
+  "resourceMonitoringErrors": [],
+  "validation": {
+    "passed": false,
+    "noDataLoss": false,
+    "noUnexpectedPayloads": true,
+    "noDuplicatePayloads": true,
+    "noDuplicateMessageIds": true,
+    "protocolCountsMatch": false,
+    "resourceMetricsAvailable": true
+  }
+}

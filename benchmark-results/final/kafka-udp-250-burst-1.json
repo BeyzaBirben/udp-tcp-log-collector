@@ -1,0 +1,80 @@
+{
+  "benchmarkId": "benchmark-kafka-0fc21b629fbb4e23990c2ff79d15f429",
+  "provider": "kafka",
+  "startedAt": "2026-08-29T10:37:45.038534+00:00",
+  "completedAt": "2026-08-29T10:38:09.426883+00:00",
+  "configuration": {
+    "tcpMessages": 20000,
+    "udpMessages": 5000,
+    "tcpClients": 20,
+    "consumerReplicas": 3,
+    "udpMessagesPerSecond": 250.0,
+    "udpBurstSize": 1,
+    "idleTimeoutSeconds": 15.0,
+    "resourceSampleIntervalSeconds": 0.5,
+    "brokerDestination": "benchmark-raw-logs-0fc21b629fbb4e23990c2ff79d15f429"
+  },
+  "counts": {
+    "expected": 25000,
+    "persisted": 25000,
+    "tcpPersisted": 20000,
+    "udpPersisted": 5000,
+    "missing": 0,
+    "unexpected": 0,
+    "duplicatePayloads": 0,
+    "duplicateMessageIds": 0
+  },
+  "timingsSeconds": {
+    "send": 20.017119,
+    "brokerAndDatabaseDrain": 4.37123,
+    "endToEnd": 24.388349
+  },
+  "throughputLogsPerSecond": {
+    "send": 1248.931,
+    "endToEnd": 1025.08
+  },
+  "resourcesByService": {
+    "broker": {
+      "sampleCount": 12,
+      "containerCount": 1,
+      "averageCpuPercent": 284.933,
+      "peakCpuPercent": 435.15,
+      "averageMemoryMiB": 500.333,
+      "peakMemoryMiB": 678.1
+    },
+    "collector": {
+      "sampleCount": 12,
+      "containerCount": 1,
+      "averageCpuPercent": 32.889,
+      "peakCpuPercent": 47.21,
+      "averageMemoryMiB": 36.653,
+      "peakMemoryMiB": 36.8
+    },
+    "consumer": {
+      "sampleCount": 12,
+      "containerCount": 3,
+      "averageCpuPercent": 127.016,
+      "peakCpuPercent": 146.87,
+      "averageMemoryMiB": 101.994,
+      "peakMemoryMiB": 102.29
+    },
+    "database": {
+      "sampleCount": 12,
+      "containerCount": 1,
+      "averageCpuPercent": 83.024,
+      "peakCpuPercent": 159.93,
+      "averageMemoryMiB": 284.083,
+      "peakMemoryMiB": 305.2
+    }
+  },
+  "resourceMonitoringErrors": [],
+  "validation": {
+    "passed": true,
+    "noDataLoss": true,
+    "noUnexpectedPayloads": true,
+    "noDuplicatePayloads": true,
+    "noDuplicateMessageIds": true,
+    "protocolCountsMatch": true,
+    "resourceMetricsAvailable": true
+  }
+}

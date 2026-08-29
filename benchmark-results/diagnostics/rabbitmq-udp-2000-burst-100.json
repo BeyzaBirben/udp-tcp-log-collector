@@ -1,0 +1,78 @@
+{
+  "benchmarkId": "benchmark-rabbitmq-8c178bc825a4475b80e9fa335621ab8f",
+  "provider": "rabbitmq",
+  "startedAt": "2026-08-29T10:14:27.885442+00:00",
+  "completedAt": "2026-08-29T10:19:30.676743+00:00",
+  "configuration": {
+    "tcpMessages": 20000,
+    "udpMessages": 5000,
+    "tcpClients": 20,
+    "consumerReplicas": 3,
+    "udpMessagesPerSecond": 2000.0,
+    "resourceSampleIntervalSeconds": 0.5,
+    "brokerDestination": "benchmark-raw-logs-8c178bc825a4475b80e9fa335621ab8f"
+  },
+  "counts": {
+    "expected": 25000,
+    "persisted": 24338,
+    "tcpPersisted": 20000,
+    "udpPersisted": 4338,
+    "missing": 662,
+    "unexpected": 0,
+    "duplicatePayloads": 0,
+    "duplicateMessageIds": 0
+  },
+  "timingsSeconds": {
+    "send": 2.543024,
+    "brokerAndDatabaseDrain": 300.248283,
+    "endToEnd": 302.791307
+  },
+  "throughputLogsPerSecond": {
+    "send": 9830.816,
+    "endToEnd": 80.379
+  },
+  "resourcesByService": {
+    "broker": {
+      "sampleCount": 149,
+      "containerCount": 1,
+      "averageCpuPercent": 198.85,
+      "peakCpuPercent": 1014.38,
+      "averageMemoryMiB": 153.01,
+      "peakMemoryMiB": 233.8
+    },
+    "collector": {
+      "sampleCount": 149,
+      "containerCount": 1,
+      "averageCpuPercent": 5.653,
+      "peakCpuPercent": 98.51,
+      "averageMemoryMiB": 34.497,
+      "peakMemoryMiB": 37.52
+    },
+    "consumer": {
+      "sampleCount": 149,
+      "containerCount": 3,
+      "averageCpuPercent": 16.62,
+      "peakCpuPercent": 277.62,
+      "averageMemoryMiB": 101.974,
+      "peakMemoryMiB": 102.69
+    },
+    "database": {
+      "sampleCount": 149,
+      "containerCount": 1,
+      "averageCpuPercent": 31.968,
+      "peakCpuPercent": 230.07,
+      "averageMemoryMiB": 247.597,
+      "peakMemoryMiB": 389.7
+    }
+  },
+  "resourceMonitoringErrors": [],
+  "validation": {
+    "passed": false,
+    "noDataLoss": false,
+    "noUnexpectedPayloads": true,
+    "noDuplicatePayloads": true,
+    "noDuplicateMessageIds": true,
+    "protocolCountsMatch": false,
+    "resourceMetricsAvailable": true
+  }
+}
