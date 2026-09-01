@@ -48,6 +48,9 @@ class LogQueryRepository(Protocol):
     async def list_sources(self) -> list[dict[str, Any]]:
         pass
 
+    async def source_exists(self, source_ip: str) -> bool:
+        pass
+
 
 class MongoLogQueryRepository:
     def __init__(self, settings: MongoDBSettings) -> None:
@@ -163,6 +166,14 @@ class MongoLogQueryRepository:
         cursor = await self._require_collection().aggregate(pipeline)
 
         return await cursor.to_list(length=None)
+
+    async def source_exists(self, source_ip: str) -> bool:
+        document = await self._require_collection().find_one(
+            {"sourceIp": source_ip},
+            {"_id": 1},
+        )
+
+        return document is not None
 
     @staticmethod
     def _query_filter(query: LogQuery) -> dict[str, Any]:

@@ -5,9 +5,9 @@ from typing import Annotated, AsyncIterator
 from uuid import UUID
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Path, Query, status
+from fastapi import FastAPI, HTTPException, Path, Query, Response, status
 
-from log_collector.api.config import APISettings
+from log_collector.api.config import APISettings, RuleStoreSettings
 from log_collector.api.models import (
     HealthResponse,
     LogResponse,
@@ -21,34 +21,71 @@ from log_collector.api.repository import (
     LogQueryRepository,
     MongoLogQueryRepository,
 )
+from log_collector.api.rule_models import (
+    RuleCreateRequest,
+    RuleResponse,
+    RuleUpdateRequest,
+    rule_response_from_document,
+)
+from log_collector.api.rule_repository import MongoRuleRepository, RuleRepository
 from log_collector.storage import MongoDBSettings
 
 
 def create_app(
     settings: APISettings | None = None,
     repository: LogQueryRepository | None = None,
+    rule_repository: RuleRepository | None = None,
 ) -> FastAPI:
     active_settings = APISettings.from_environment() if settings is None else settings
-    active_repository = (
-        MongoLogQueryRepository(MongoDBSettings.from_environment())
-        if repository is None
-        else repository
-    )
+    database_settings: MongoDBSettings | None = None
+
+    if repository is None or rule_repository is None:
+        database_settings = MongoDBSettings.from_environment()
+
+    if repository is None:
+        if database_settings is None:
+            raise RuntimeError("MongoDB settings are unavailable")
+
+        active_repository = MongoLogQueryRepository(database_settings)
+    else:
+        active_repository = repository
+
+    if rule_repository is None:
+        if database_settings is None:
+            raise RuntimeError("MongoDB settings are unavailable")
+
+        active_rule_repository = MongoRuleRepository(
+            database_settings,
+            RuleStoreSettings.from_environment(),
+        )
+    else:
+        active_rule_repository = rule_repository
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         await active_repository.connect()
+
+        try:
+            await active_rule_repository.connect()
+        except Exception:
+            await active_repository.close()
+            raise
+
         application.state.log_repository = active_repository
+        application.state.rule_repository = active_rule_repository
 
         try:
             yield
         finally:
-            await active_repository.close()
+            try:
+                await active_rule_repository.close()
+            finally:
+                await active_repository.close()
 
     application = FastAPI(
         title="UDP/TCP Log API",
-        summary="Read-only API for collected UDP and TCP logs",
-        version="1.0.0",
+        summary="API for collected logs and correlation rules",
+        version="1.1.0",
         lifespan=lifespan,
     )
 
@@ -61,6 +98,7 @@ def create_app(
     async def health() -> HealthResponse:
         try:
             await active_repository.ping()
+            await active_rule_repository.ping()
         except Exception as error:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -179,6 +217,88 @@ def create_app(
 
         return _paginated_response(result, page, page_size)
 
+    async def ensure_source_exists(source_ip: str) -> None:
+        if not await active_repository.source_exists(source_ip):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="sourceIp must identify a source that exists in collected logs",
+            )
+
+    @application.get(
+        "/api/rules",
+        response_model=list[RuleResponse],
+        tags=["Rules"],
+        summary="List correlation rules",
+    )
+    async def list_rules() -> list[RuleResponse]:
+        documents = await active_rule_repository.list_rules()
+
+        return [rule_response_from_document(document) for document in documents]
+
+    @application.post(
+        "/api/rules",
+        response_model=RuleResponse,
+        status_code=status.HTTP_201_CREATED,
+        tags=["Rules"],
+        summary="Create a correlation rule",
+    )
+    async def create_rule(request: RuleCreateRequest) -> RuleResponse:
+        await ensure_source_exists(request.sourceIp)
+        document = await active_rule_repository.create_rule(request)
+
+        return rule_response_from_document(document)
+
+    @application.get(
+        "/api/rules/{id}",
+        response_model=RuleResponse,
+        tags=["Rules"],
+        summary="Get one correlation rule",
+    )
+    async def get_rule(
+        rule_id: Annotated[UUID, Path(alias="id", description="Rule identifier")],
+    ) -> RuleResponse:
+        document = await active_rule_repository.get_rule(str(rule_id))
+
+        if document is None:
+            raise _rule_not_found()
+
+        return rule_response_from_document(document)
+
+    @application.put(
+        "/api/rules/{id}",
+        response_model=RuleResponse,
+        tags=["Rules"],
+        summary="Replace a correlation rule",
+    )
+    async def update_rule(
+        request: RuleUpdateRequest,
+        rule_id: Annotated[UUID, Path(alias="id", description="Rule identifier")],
+    ) -> RuleResponse:
+        await ensure_source_exists(request.sourceIp)
+        document = await active_rule_repository.update_rule(str(rule_id), request)
+
+        if document is None:
+            raise _rule_not_found()
+
+        return rule_response_from_document(document)
+
+    @application.delete(
+        "/api/rules/{id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        response_class=Response,
+        tags=["Rules"],
+        summary="Delete a correlation rule",
+    )
+    async def delete_rule(
+        rule_id: Annotated[UUID, Path(alias="id", description="Rule identifier")],
+    ) -> Response:
+        deleted = await active_rule_repository.delete_rule(str(rule_id))
+
+        if not deleted:
+            raise _rule_not_found()
+
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     return application
 
 
@@ -244,6 +364,13 @@ def _paginated_response(
         page=page,
         pageSize=page_size,
         total=result.total,
+    )
+
+
+def _rule_not_found() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Rule was not found",
     )
 
 

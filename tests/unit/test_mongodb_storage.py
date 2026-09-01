@@ -4,7 +4,7 @@ from datetime import timezone
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from bson.binary import Binary
-from pymongo import DESCENDING, AsyncMongoClient, UpdateOne
+from pymongo import ASCENDING, DESCENDING, AsyncMongoClient, UpdateOne
 from pymongo.asynchronous.collection import AsyncCollection
 
 from log_collector.broker import BrokerMessage
@@ -181,6 +181,10 @@ class MongoLogRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 call(
                     [("receivedAt", DESCENDING)],
                     name="received_at_descending",
+                ),
+                call(
+                    [("sourceIp", ASCENDING), ("receivedAt", DESCENDING)],
+                    name="source_ip_received_at",
                 ),
             ]
         )

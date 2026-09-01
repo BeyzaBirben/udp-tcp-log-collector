@@ -20,6 +20,7 @@ class FakeLogQueryRepository:
         self.sources: list[dict[str, Any]] = []
         self.query_calls: list[tuple[LogQuery, int, int]] = []
         self.log_ids: list[str] = []
+        self.existing_sources: set[str] = set()
 
     async def connect(self) -> None:
         self.connected = True
@@ -49,6 +50,45 @@ class FakeLogQueryRepository:
     async def list_sources(self) -> list[dict[str, Any]]:
         return self.sources
 
+    async def source_exists(self, source_ip: str) -> bool:
+        return source_ip in self.existing_sources
+
+
+class FakeRuleRepository:
+    def __init__(self) -> None:
+        self.connected = False
+        self.closed = False
+        self.ping_error: Exception | None = None
+
+    async def connect(self) -> None:
+        self.connected = True
+
+    async def close(self) -> None:
+        self.closed = True
+
+    async def ping(self) -> None:
+        if self.ping_error is not None:
+            raise self.ping_error
+
+    async def list_rules(self) -> list[dict[str, Any]]:
+        return []
+
+    async def get_rule(self, rule_id: str) -> dict[str, Any] | None:
+        return None
+
+    async def create_rule(self, rule: object) -> dict[str, Any]:
+        raise AssertionError("Rule creation was not expected")
+
+    async def update_rule(
+        self,
+        rule_id: str,
+        rule: object,
+    ) -> dict[str, Any] | None:
+        raise AssertionError("Rule update was not expected")
+
+    async def delete_rule(self, rule_id: str) -> bool:
+        raise AssertionError("Rule deletion was not expected")
+
 
 def make_document() -> dict[str, Any]:
     raw_log = b"login failed|\x00\xff"
@@ -71,9 +111,14 @@ def make_document() -> dict[str, Any]:
 class LogAPITests(unittest.TestCase):
     def setUp(self) -> None:
         self.repository = FakeLogQueryRepository()
+        self.rule_repository = FakeRuleRepository()
         self.settings = APISettings(default_page_size=2, max_page_size=3)
         self.client_context = TestClient(
-            create_app(settings=self.settings, repository=self.repository)
+            create_app(
+                settings=self.settings,
+                repository=self.repository,
+                rule_repository=self.rule_repository,
+            )
         )
         self.client = self.client_context.__enter__()
 
@@ -83,10 +128,12 @@ class LogAPITests(unittest.TestCase):
 
     def test_lifespan_connects_and_closes_repository(self) -> None:
         self.assertTrue(self.repository.connected)
+        self.assertTrue(self.rule_repository.connected)
 
         self.client_context.__exit__(None, None, None)
 
         self.assertTrue(self.repository.closed)
+        self.assertTrue(self.rule_repository.closed)
 
     def test_health_checks_database(self) -> None:
         response = self.client.get("/health")
