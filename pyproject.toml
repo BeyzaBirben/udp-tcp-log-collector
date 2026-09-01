@@ -11,12 +11,16 @@ requires-python = ">=3.12"
 dependencies = [
     "aio-pika>=10.0.1,<11",
     "aiokafka>=0.14.0,<1",
+    "fastapi>=0.141.1,<1",
+    "httpx2>=2.0.0,<3",
     "pymongo>=4.17.0,<5",
+    "uvicorn>=0.35.0,<1",
 ]
 
 [project.scripts]
 log-collector = "log_collector.__main__:main"
 log-consumer = "log_collector.consumer:main"
+log-api = "log_collector.api.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
