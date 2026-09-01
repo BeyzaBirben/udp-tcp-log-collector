@@ -1,6 +1,6 @@
 import unittest
 
-from log_collector.api.config import APISettings
+from log_collector.api.config import APISettings, RuleStoreSettings
 
 
 class APISettingsTests(unittest.TestCase):
@@ -50,3 +50,21 @@ class APISettingsTests(unittest.TestCase):
     def test_rejects_default_page_size_above_maximum(self) -> None:
         with self.assertRaisesRegex(ValueError, "must not exceed"):
             APISettings(default_page_size=201, max_page_size=200)
+
+
+class RuleStoreSettingsTests(unittest.TestCase):
+    def test_loads_default_collection(self) -> None:
+        settings = RuleStoreSettings.from_environment({})
+
+        self.assertEqual(settings.collection, "correlation_rules")
+
+    def test_loads_custom_collection(self) -> None:
+        settings = RuleStoreSettings.from_environment(
+            {"MONGODB_RULES_COLLECTION": " security_rules "}
+        )
+
+        self.assertEqual(settings.collection, "security_rules")
+
+    def test_rejects_empty_collection(self) -> None:
+        with self.assertRaisesRegex(ValueError, "MONGODB_RULES_COLLECTION"):
+            RuleStoreSettings.from_environment({"MONGODB_RULES_COLLECTION": "  "})

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import timezone
 
 from bson.binary import Binary
-from pymongo import DESCENDING, AsyncMongoClient, UpdateOne
+from pymongo import ASCENDING, DESCENDING, AsyncMongoClient, UpdateOne
 from pymongo.asynchronous.collection import AsyncCollection
 from pymongo.write_concern import WriteConcern
 
@@ -128,6 +128,10 @@ class MongoLogRepository:
                 await collection.create_index(
                     [("receivedAt", DESCENDING)],
                     name="received_at_descending",
+                )
+                await collection.create_index(
+                    [("sourceIp", ASCENDING), ("receivedAt", DESCENDING)],
+                    name="source_ip_received_at",
                 )
             except Exception:
                 await client.close()

@@ -54,6 +54,29 @@ class APISettings:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class RuleStoreSettings:
+    collection: str = "correlation_rules"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.collection, str) or not self.collection.strip():
+            raise ValueError("MONGODB_RULES_COLLECTION must not be empty")
+
+    @classmethod
+    def from_environment(
+        cls,
+        values: Mapping[str, str] | None = None,
+    ) -> "RuleStoreSettings":
+        environment = os.environ if values is None else values
+
+        return cls(
+            collection=environment.get(
+                "MONGODB_RULES_COLLECTION",
+                "correlation_rules",
+            ).strip()
+        )
+
+
 def _integer(
     environment: Mapping[str, str],
     variable_name: str,

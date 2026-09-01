@@ -137,6 +137,18 @@ class MongoLogQueryRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"_id": "log-1"})
         self.collection.find_one.assert_awaited_once_with({"_id": "log-1"})
 
+    async def test_checks_source_existence_without_loading_log_documents(self) -> None:
+        self.collection.find_one.return_value = {"_id": "log-1"}
+        repository = await self.connected_repository()
+
+        exists = await repository.source_exists("192.168.1.15")
+
+        self.assertTrue(exists)
+        self.collection.find_one.assert_awaited_once_with(
+            {"sourceIp": "192.168.1.15"},
+            {"_id": 1},
+        )
+
     async def test_aggregates_source_summaries_in_database(self) -> None:
         sources = [
             {
