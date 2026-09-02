@@ -6,12 +6,20 @@ import signal
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from log_collector.api.config import RuleStoreSettings
 from log_collector.broker import (
     BrokerProvider,
     BrokerSettings,
     KafkaConsumer,
     MessageConsumer,
     RabbitMQConsumer,
+)
+from log_collector.correlation import (
+    CorrelationProcessor,
+    CorrelationSettings,
+    LoggingCorrelationMatchHandler,
+    MongoActiveRuleProvider,
+    StreamCorrelationEngine,
 )
 from log_collector.storage import (
     MongoDBSettings,
@@ -80,10 +88,12 @@ class LogConsumerService:
         consumer: MessageConsumer,
         repository: MongoLogRepository,
         settings: ConsumerSettings,
+        correlation: CorrelationProcessor | None = None,
     ) -> None:
         self._consumer = consumer
         self._repository = repository
         self._settings = settings
+        self._correlation = correlation
         self._connected = False
         self._running = False
         self._stop_requested = asyncio.Event()
@@ -96,9 +106,23 @@ class LogConsumerService:
 
             await self._repository.connect()
 
+            if self._correlation is not None:
+                try:
+                    await self._correlation.connect()
+                except Exception:
+                    logger.exception(
+                        "Correlation startup failed; log persistence will continue"
+                    )
+
             try:
                 await self._consumer.connect()
             except Exception:
+                if self._correlation is not None:
+                    try:
+                        await self._correlation.close()
+                    except Exception:
+                        logger.exception("Failed to close correlation resources")
+
                 await self._repository.close()
                 raise
 
@@ -122,16 +146,31 @@ class LogConsumerService:
             return None
 
         try:
-            result = await self._repository.save_batch(
-                [delivery.message for delivery in deliveries]
-            )
+            messages = [delivery.message for delivery in deliveries]
+            result = await self._repository.save_batch(messages)
         except Exception:
             try:
                 await self._consumer.reject(deliveries, requeue=True)
             except Exception:
-                logger.exception("Failed to requeue messages after MongoDB write failure")
+                logger.exception(
+                    "Failed to requeue messages after MongoDB write failure"
+                )
 
             raise
+
+        if self._correlation is not None:
+            try:
+                match_count = await self._correlation.process(messages)
+
+                if match_count:
+                    logger.info(
+                        "Correlation matched %s rule-message pair(s)",
+                        match_count,
+                    )
+            except Exception:
+                logger.exception(
+                    "Correlation processing failed; persisted logs will be acknowledged"
+                )
 
         await self._consumer.acknowledge(deliveries)
 
@@ -187,10 +226,32 @@ class LogConsumerService:
 
             self._connected = False
 
+            consumer_error: Exception | None = None
+
             try:
                 await self._consumer.close()
-            finally:
+            except Exception as error:
+                consumer_error = error
+
+            if self._correlation is not None:
+                try:
+                    await self._correlation.close()
+                except Exception:
+                    logger.exception("Failed to close correlation resources")
+
+            try:
                 await self._repository.close()
+            except Exception:
+                if consumer_error is not None:
+                    logger.exception(
+                        "Failed to close MongoDB after broker close failure"
+                    )
+                    raise consumer_error
+
+                raise
+
+            if consumer_error is not None:
+                raise consumer_error
 
             logger.info("Log consumer disconnected")
 
@@ -205,14 +266,45 @@ def create_message_consumer(settings: BrokerSettings) -> MessageConsumer:
     raise ValueError(f"Unsupported broker provider: {settings.provider}")
 
 
+def create_correlation_processor(
+    correlation_settings: CorrelationSettings,
+    mongodb_settings: MongoDBSettings,
+    rule_store_settings: RuleStoreSettings | None = None,
+) -> CorrelationProcessor | None:
+    if not correlation_settings.enabled:
+        return None
+
+    active_rule_store_settings = (
+        RuleStoreSettings.from_environment()
+        if rule_store_settings is None
+        else rule_store_settings
+    )
+
+    return StreamCorrelationEngine(
+        provider=MongoActiveRuleProvider(
+            mongodb_settings,
+            active_rule_store_settings,
+        ),
+        handler=LoggingCorrelationMatchHandler(),
+        settings=correlation_settings,
+    )
+
+
 async def run_consumer() -> None:
     broker_settings = BrokerSettings.from_environment()
     mongodb_settings = MongoDBSettings.from_environment()
     consumer_settings = ConsumerSettings.from_environment()
+    correlation_settings = CorrelationSettings.from_environment()
+    correlation = create_correlation_processor(
+        correlation_settings,
+        mongodb_settings,
+    )
+
     service = LogConsumerService(
         consumer=create_message_consumer(broker_settings),
         repository=MongoLogRepository(mongodb_settings),
         settings=consumer_settings,
+        correlation=correlation,
     )
 
     event_loop = asyncio.get_running_loop()
