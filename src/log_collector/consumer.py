@@ -22,6 +22,11 @@ from log_collector.correlation import (
     MongoActiveRuleProvider,
     StreamCorrelationEngine,
 )
+from log_collector.email_delivery import (
+    AsyncEmailDispatcher,
+    SMTPEmailSender,
+    SMTPSettings,
+)
 from log_collector.storage import (
     MongoDBSettings,
     MongoLogRepository,
@@ -272,6 +277,7 @@ def create_correlation_processor(
     mongodb_settings: MongoDBSettings,
     rule_store_settings: RuleStoreSettings | None = None,
     alarm_store_settings: AlarmStoreSettings | None = None,
+    smtp_settings: SMTPSettings | None = None,
 ) -> CorrelationProcessor | None:
     if not correlation_settings.enabled:
         return None
@@ -290,13 +296,25 @@ def create_correlation_processor(
         mongodb_settings,
         active_alarm_store_settings,
     )
+    active_smtp_settings = (
+        SMTPSettings.from_environment()
+        if smtp_settings is None
+        else smtp_settings
+    )
+    email_dispatcher = AsyncEmailDispatcher(
+        sender=SMTPEmailSender(active_smtp_settings),
+        status_writer=alarm_repository,
+    )
 
     return StreamCorrelationEngine(
         provider=MongoActiveRuleProvider(
             mongodb_settings,
             active_rule_store_settings,
         ),
-        handler=AlarmCorrelationMatchHandler(alarm_repository),
+        handler=AlarmCorrelationMatchHandler(
+            alarm_repository,
+            email_dispatcher,
+        ),
         settings=correlation_settings,
     )
 
