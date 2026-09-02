@@ -3,6 +3,7 @@ import math
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from log_collector.api.config import RuleStoreSettings
 from log_collector.broker import (
     BrokerDelivery,
     BrokerMessage,
@@ -15,10 +16,20 @@ from log_collector.broker import (
 from log_collector.consumer import (
     ConsumerSettings,
     LogConsumerService,
+    create_correlation_processor,
     create_message_consumer,
 )
+from log_collector.correlation import (
+    CorrelationProcessor,
+    CorrelationSettings,
+    StreamCorrelationEngine,
+)
 from log_collector.models import LogRecord
-from log_collector.storage import MongoLogRepository, PersistenceResult
+from log_collector.storage import (
+    MongoDBSettings,
+    MongoLogRepository,
+    PersistenceResult,
+)
 
 
 class ConsumerSettingsTests(unittest.TestCase):
@@ -93,6 +104,30 @@ class MessageConsumerFactoryTests(unittest.TestCase):
             create_message_consumer(settings)
 
 
+class CorrelationProcessorFactoryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.mongodb_settings = MongoDBSettings()
+        self.rule_store_settings = RuleStoreSettings()
+
+    def test_creates_stream_engine_when_enabled(self) -> None:
+        processor = create_correlation_processor(
+            CorrelationSettings(enabled=True),
+            self.mongodb_settings,
+            self.rule_store_settings,
+        )
+
+        self.assertIsInstance(processor, StreamCorrelationEngine)
+
+    def test_disables_correlation_without_creating_provider(self) -> None:
+        processor = create_correlation_processor(
+            CorrelationSettings(enabled=False),
+            self.mongodb_settings,
+            self.rule_store_settings,
+        )
+
+        self.assertIsNone(processor)
+
+
 class LogConsumerServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.settings = ConsumerSettings(
@@ -115,6 +150,11 @@ class LogConsumerServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.repository.close = AsyncMock()
 
+        self.correlation = MagicMock(spec=CorrelationProcessor)
+        self.correlation.connect = AsyncMock()
+        self.correlation.process = AsyncMock(return_value=0)
+        self.correlation.close = AsyncMock()
+
     def make_delivery(self, raw_log: bytes = b"consumer-test") -> BrokerDelivery:
         record = LogRecord.capture(
             protocol="UDP",
@@ -135,6 +175,14 @@ class LogConsumerServiceTests(unittest.IsolatedAsyncioTestCase):
             settings=self.settings,
         )
 
+    def make_correlated_service(self) -> LogConsumerService:
+        return LogConsumerService(
+            consumer=self.consumer,
+            repository=self.repository,
+            settings=self.settings,
+            correlation=self.correlation,
+        )
+
     async def test_connects_database_before_message_broker(self) -> None:
         service = self.make_service()
         events: list[str] = []
@@ -151,6 +199,48 @@ class LogConsumerServiceTests(unittest.IsolatedAsyncioTestCase):
         await service.connect()
 
         self.assertEqual(events, ["database", "broker"])
+
+    async def test_connects_database_correlation_and_broker_in_order(self) -> None:
+        service = self.make_correlated_service()
+        events: list[str] = []
+
+        async def connect_repository() -> None:
+            events.append("database")
+
+        async def connect_correlation() -> None:
+            events.append("correlation")
+
+        async def connect_consumer() -> None:
+            events.append("broker")
+
+        self.repository.connect.side_effect = connect_repository
+        self.correlation.connect.side_effect = connect_correlation
+        self.consumer.connect.side_effect = connect_consumer
+
+        await service.connect()
+
+        self.assertEqual(events, ["database", "correlation", "broker"])
+
+    async def test_correlation_startup_failure_does_not_block_log_consumer(
+        self,
+    ) -> None:
+        service = self.make_correlated_service()
+        self.correlation.connect.side_effect = RuntimeError("rules unavailable")
+
+        with self.assertLogs("log_collector.consumer", level="ERROR"):
+            await service.connect()
+
+        self.consumer.connect.assert_awaited_once()
+
+    async def test_closes_correlation_if_broker_connection_fails(self) -> None:
+        service = self.make_correlated_service()
+        self.consumer.connect.side_effect = RuntimeError("broker unavailable")
+
+        with self.assertRaisesRegex(RuntimeError, "broker unavailable"):
+            await service.connect()
+
+        self.correlation.close.assert_awaited_once()
+        self.repository.close.assert_awaited_once()
 
     async def test_connect_is_idempotent(self) -> None:
         service = self.make_service()
@@ -219,6 +309,62 @@ class LogConsumerServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(events, ["database", "acknowledge"])
         self.assertEqual(result, PersistenceResult(1, 1, 0))
+
+    async def test_correlates_persisted_messages_before_acknowledgement(self) -> None:
+        service = self.make_correlated_service()
+        delivery = self.make_delivery(b"login failed")
+        self.consumer.receive_batch.return_value = [delivery]
+        self.correlation.process.return_value = 1
+        events: list[str] = []
+
+        async def save_messages(messages: list[BrokerMessage]) -> PersistenceResult:
+            events.append("database")
+            return PersistenceResult(1, 1, 0)
+
+        async def correlate_messages(messages: list[BrokerMessage]) -> int:
+            events.append("correlation")
+            self.assertEqual(messages, [delivery.message])
+            return 1
+
+        async def acknowledge_messages(deliveries: list[BrokerDelivery]) -> None:
+            events.append("acknowledge")
+
+        self.repository.save_batch.side_effect = save_messages
+        self.correlation.process.side_effect = correlate_messages
+        self.consumer.acknowledge.side_effect = acknowledge_messages
+
+        await service.connect()
+        result = await service.process_batch()
+
+        self.assertEqual(events, ["database", "correlation", "acknowledge"])
+        self.assertEqual(result, PersistenceResult(1, 1, 0))
+
+    async def test_correlation_failure_does_not_prevent_acknowledgement(self) -> None:
+        service = self.make_correlated_service()
+        deliveries = [self.make_delivery()]
+        self.consumer.receive_batch.return_value = deliveries
+        self.correlation.process.side_effect = RuntimeError("rule failed")
+
+        await service.connect()
+
+        with self.assertLogs("log_collector.consumer", level="ERROR"):
+            result = await service.process_batch()
+
+        self.assertEqual(result, PersistenceResult(1, 1, 0))
+        self.consumer.acknowledge.assert_awaited_once_with(deliveries)
+
+    async def test_database_failure_skips_correlation(self) -> None:
+        service = self.make_correlated_service()
+        deliveries = [self.make_delivery()]
+        self.consumer.receive_batch.return_value = deliveries
+        self.repository.save_batch.side_effect = RuntimeError("write failed")
+
+        await service.connect()
+
+        with self.assertRaisesRegex(RuntimeError, "write failed"):
+            await service.process_batch()
+
+        self.correlation.process.assert_not_awaited()
 
     async def test_writes_all_received_messages_in_one_database_batch(self) -> None:
         service = self.make_service()
@@ -304,6 +450,31 @@ class LogConsumerServiceTests(unittest.IsolatedAsyncioTestCase):
         await service.connect()
         await service.close()
         await service.close()
+
+        self.consumer.close.assert_awaited_once()
+        self.repository.close.assert_awaited_once()
+
+    async def test_close_releases_correlation_resources(self) -> None:
+        service = self.make_correlated_service()
+
+        await service.connect()
+        await service.close()
+        await service.close()
+
+        self.consumer.close.assert_awaited_once()
+        self.correlation.close.assert_awaited_once()
+        self.repository.close.assert_awaited_once()
+
+    async def test_correlation_close_failure_does_not_block_other_resources(
+        self,
+    ) -> None:
+        service = self.make_correlated_service()
+        self.correlation.close.side_effect = RuntimeError("close failed")
+
+        await service.connect()
+
+        with self.assertLogs("log_collector.consumer", level="ERROR"):
+            await service.close()
 
         self.consumer.close.assert_awaited_once()
         self.repository.close.assert_awaited_once()
