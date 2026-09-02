@@ -1,6 +1,10 @@
 import unittest
 
-from log_collector.api.config import APISettings, RuleStoreSettings
+from log_collector.api.config import (
+    APISettings,
+    AlarmStoreSettings,
+    RuleStoreSettings,
+)
 
 
 class APISettingsTests(unittest.TestCase):
@@ -68,3 +72,23 @@ class RuleStoreSettingsTests(unittest.TestCase):
     def test_rejects_empty_collection(self) -> None:
         with self.assertRaisesRegex(ValueError, "MONGODB_RULES_COLLECTION"):
             RuleStoreSettings.from_environment({"MONGODB_RULES_COLLECTION": "  "})
+
+
+class AlarmStoreSettingsTests(unittest.TestCase):
+    def test_loads_default_collection(self) -> None:
+        settings = AlarmStoreSettings.from_environment({})
+
+        self.assertEqual(settings.collection, "alarms")
+
+    def test_loads_custom_collection(self) -> None:
+        settings = AlarmStoreSettings.from_environment(
+            {"MONGODB_ALARMS_COLLECTION": " security_alarms "}
+        )
+
+        self.assertEqual(settings.collection, "security_alarms")
+
+    def test_rejects_empty_collection(self) -> None:
+        with self.assertRaisesRegex(ValueError, "MONGODB_ALARMS_COLLECTION"):
+            AlarmStoreSettings.from_environment(
+                {"MONGODB_ALARMS_COLLECTION": "  "}
+            )

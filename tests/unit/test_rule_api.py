@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from log_collector.api.alarm_repository import AlarmPage, AlarmQuery, NewAlarm
 from log_collector.api.app import create_app
 from log_collector.api.config import APISettings
 from log_collector.api.repository import LogPage, LogQuery
@@ -127,6 +128,35 @@ class FakeRuleRepository:
         return document
 
 
+class FakeAlarmRepository:
+    def __init__(self) -> None:
+        self.connected = False
+        self.closed = False
+
+    async def connect(self) -> None:
+        self.connected = True
+
+    async def close(self) -> None:
+        self.closed = True
+
+    async def ping(self) -> None:
+        pass
+
+    async def create_alarm(self, alarm: NewAlarm) -> dict[str, Any]:
+        raise AssertionError("Alarm creation was not expected")
+
+    async def list_alarms(
+        self,
+        query: AlarmQuery,
+        page: int,
+        page_size: int,
+    ) -> AlarmPage:
+        return AlarmPage([], 0)
+
+    async def get_alarm(self, alarm_id: str) -> dict[str, Any] | None:
+        return None
+
+
 def valid_rule_payload() -> dict[str, Any]:
     return {
         "name": "SSH Login Failed",
@@ -148,11 +178,13 @@ class RuleAPITests(unittest.TestCase):
     def setUp(self) -> None:
         self.log_repository = FakeLogRepository()
         self.rule_repository = FakeRuleRepository()
+        self.alarm_repository = FakeAlarmRepository()
         self.client_context = TestClient(
             create_app(
                 settings=APISettings(),
                 repository=self.log_repository,
                 rule_repository=self.rule_repository,
+                alarm_repository=self.alarm_repository,
             )
         )
         self.client = self.client_context.__enter__()
@@ -188,6 +220,7 @@ class RuleAPITests(unittest.TestCase):
                 settings=APISettings(),
                 repository=log_repository,
                 rule_repository=rule_repository,
+                alarm_repository=FakeAlarmRepository(),
             )
         )
 

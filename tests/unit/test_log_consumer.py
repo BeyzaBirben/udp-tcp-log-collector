@@ -3,7 +3,7 @@ import math
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from log_collector.api.config import RuleStoreSettings
+from log_collector.api.config import AlarmStoreSettings, RuleStoreSettings
 from log_collector.broker import (
     BrokerDelivery,
     BrokerMessage,
@@ -108,6 +108,7 @@ class CorrelationProcessorFactoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.mongodb_settings = MongoDBSettings()
         self.rule_store_settings = RuleStoreSettings()
+        self.alarm_store_settings = AlarmStoreSettings()
 
     def test_creates_stream_engine_when_enabled(self) -> None:
         processor = create_correlation_processor(
@@ -118,14 +119,46 @@ class CorrelationProcessorFactoryTests(unittest.TestCase):
 
         self.assertIsInstance(processor, StreamCorrelationEngine)
 
-    def test_disables_correlation_without_creating_provider(self) -> None:
-        processor = create_correlation_processor(
-            CorrelationSettings(enabled=False),
+    def test_creates_alarm_handler_with_configured_collection(self) -> None:
+        alarm_repository = MagicMock()
+        alarm_handler = MagicMock()
+
+        with (
+            patch(
+                "log_collector.consumer.MongoAlarmRepository",
+                return_value=alarm_repository,
+            ) as repository_factory,
+            patch(
+                "log_collector.consumer.AlarmCorrelationMatchHandler",
+                return_value=alarm_handler,
+            ) as handler_factory,
+        ):
+            processor = create_correlation_processor(
+                CorrelationSettings(enabled=True),
+                self.mongodb_settings,
+                self.rule_store_settings,
+                self.alarm_store_settings,
+            )
+
+        self.assertIsInstance(processor, StreamCorrelationEngine)
+        repository_factory.assert_called_once_with(
             self.mongodb_settings,
-            self.rule_store_settings,
+            self.alarm_store_settings,
         )
+        handler_factory.assert_called_once_with(alarm_repository)
+
+    def test_disables_correlation_without_creating_provider(self) -> None:
+        with patch(
+            "log_collector.consumer.MongoAlarmRepository"
+        ) as repository_factory:
+            processor = create_correlation_processor(
+                CorrelationSettings(enabled=False),
+                self.mongodb_settings,
+                self.rule_store_settings,
+            )
 
         self.assertIsNone(processor)
+        repository_factory.assert_not_called()
 
 
 class LogConsumerServiceTests(unittest.IsolatedAsyncioTestCase):
