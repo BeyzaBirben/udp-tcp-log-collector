@@ -1,0 +1,96 @@
+{
+  "benchmarkId": "benchmark-kafka-4826152c66da45079f740f0f0e719bfa",
+  "provider": "kafka",
+  "startedAt": "2026-09-02T22:39:48.879817+00:00",
+  "completedAt": "2026-09-02T22:40:09.713682+00:00",
+  "configuration": {
+    "tcpMessages": 20000,
+    "udpMessages": 5000,
+    "tcpClients": 20,
+    "consumerReplicas": 3,
+    "udpMessagesPerSecond": 250.0,
+    "udpBurstSize": 1,
+    "idleTimeoutSeconds": 15.0,
+    "resourceSampleIntervalSeconds": 0.5,
+    "brokerDestination": "benchmark-raw-logs-4826152c66da45079f740f0f0e719bfa"
+  },
+  "counts": {
+    "expected": 25000,
+    "persisted": 25000,
+    "tcpPersisted": 20000,
+    "udpPersisted": 5000,
+    "missing": 0,
+    "unexpected": 0,
+    "duplicatePayloads": 0,
+    "duplicateMessageIds": 0
+  },
+  "timingsSeconds": {
+    "send": 20.032071,
+    "brokerAndDatabaseDrain": 0.80179,
+    "endToEnd": 20.833861
+  },
+  "throughputLogsPerSecond": {
+    "send": 1247.999,
+    "endToEnd": 1199.97
+  },
+  "resourcesByService": {
+    "api": {
+      "sampleCount": 11,
+      "containerCount": 1,
+      "averageCpuPercent": 3.442,
+      "peakCpuPercent": 25.14,
+      "averageMemoryMiB": 55.16,
+      "peakMemoryMiB": 55.16
+    },
+    "broker": {
+      "sampleCount": 11,
+      "containerCount": 1,
+      "averageCpuPercent": 106.217,
+      "peakCpuPercent": 214.92,
+      "averageMemoryMiB": 565.664,
+      "peakMemoryMiB": 783.4
+    },
+    "collector": {
+      "sampleCount": 11,
+      "containerCount": 1,
+      "averageCpuPercent": 13.648,
+      "peakCpuPercent": 16.14,
+      "averageMemoryMiB": 36.914,
+      "peakMemoryMiB": 37.27
+    },
+    "consumer": {
+      "sampleCount": 11,
+      "containerCount": 3,
+      "averageCpuPercent": 60.958,
+      "peakCpuPercent": 71.37,
+      "averageMemoryMiB": 122.529,
+      "peakMemoryMiB": 123.13
+    },
+    "database": {
+      "sampleCount": 11,
+      "containerCount": 1,
+      "averageCpuPercent": 33.601,
+      "peakCpuPercent": 76.62,
+      "averageMemoryMiB": 337.882,
+      "peakMemoryMiB": 461.1
+    },
+    "mailhog": {
+      "sampleCount": 11,
+      "containerCount": 1,
+      "averageCpuPercent": 0.453,
+      "peakCpuPercent": 1.82,
+      "averageMemoryMiB": 2.686,
+      "peakMemoryMiB": 2.996
+    }
+  },
+  "resourceMonitoringErrors": [],
+  "validation": {
+    "passed": true,
+    "noDataLoss": true,
+    "noUnexpectedPayloads": true,
+    "noDuplicatePayloads": true,
+    "noDuplicateMessageIds": true,
+    "protocolCountsMatch": true,
+    "resourceMetricsAvailable": true
+  }
+}
