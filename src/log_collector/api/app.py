@@ -7,7 +7,23 @@ from uuid import UUID
 import uvicorn
 from fastapi import FastAPI, HTTPException, Path, Query, Response, status
 
-from log_collector.api.config import APISettings, RuleStoreSettings
+from log_collector.api.alarm_models import (
+    AlarmDetailResponse,
+    PaginatedAlarmsResponse,
+    alarm_detail_response_from_documents,
+    alarm_response_from_document,
+)
+from log_collector.api.alarm_repository import (
+    AlarmPage,
+    AlarmQuery,
+    AlarmRepository,
+    MongoAlarmRepository,
+)
+from log_collector.api.config import (
+    APISettings,
+    AlarmStoreSettings,
+    RuleStoreSettings,
+)
 from log_collector.api.models import (
     HealthResponse,
     LogResponse,
@@ -35,11 +51,16 @@ def create_app(
     settings: APISettings | None = None,
     repository: LogQueryRepository | None = None,
     rule_repository: RuleRepository | None = None,
+    alarm_repository: AlarmRepository | None = None,
 ) -> FastAPI:
     active_settings = APISettings.from_environment() if settings is None else settings
     database_settings: MongoDBSettings | None = None
 
-    if repository is None or rule_repository is None:
+    if (
+        repository is None
+        or rule_repository is None
+        or alarm_repository is None
+    ):
         database_settings = MongoDBSettings.from_environment()
 
     if repository is None:
@@ -61,6 +82,17 @@ def create_app(
     else:
         active_rule_repository = rule_repository
 
+    if alarm_repository is None:
+        if database_settings is None:
+            raise RuntimeError("MongoDB settings are unavailable")
+
+        active_alarm_repository = MongoAlarmRepository(
+            database_settings,
+            AlarmStoreSettings.from_environment(),
+        )
+    else:
+        active_alarm_repository = alarm_repository
+
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         await active_repository.connect()
@@ -71,21 +103,34 @@ def create_app(
             await active_repository.close()
             raise
 
+        try:
+            await active_alarm_repository.connect()
+        except Exception:
+            try:
+                await active_rule_repository.close()
+            finally:
+                await active_repository.close()
+            raise
+
         application.state.log_repository = active_repository
         application.state.rule_repository = active_rule_repository
+        application.state.alarm_repository = active_alarm_repository
 
         try:
             yield
         finally:
             try:
-                await active_rule_repository.close()
+                await active_alarm_repository.close()
             finally:
-                await active_repository.close()
+                try:
+                    await active_rule_repository.close()
+                finally:
+                    await active_repository.close()
 
     application = FastAPI(
         title="UDP/TCP Log API",
-        summary="API for collected logs and correlation rules",
-        version="1.1.0",
+        summary="API for collected logs, correlation rules, and alarms",
+        version="1.2.0",
         lifespan=lifespan,
     )
 
@@ -99,6 +144,7 @@ def create_app(
         try:
             await active_repository.ping()
             await active_rule_repository.ping()
+            await active_alarm_repository.ping()
         except Exception as error:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -299,6 +345,71 @@ def create_app(
 
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+    @application.get(
+        "/api/alarms",
+        response_model=PaginatedAlarmsResponse,
+        tags=["Alarms"],
+        summary="Query generated alarms",
+    )
+    async def list_alarms(
+        from_: Annotated[
+            datetime | None,
+            Query(alias="from", description="Inclusive range start with timezone"),
+        ] = None,
+        to: Annotated[
+            datetime | None,
+            Query(description="Inclusive range end with timezone"),
+        ] = None,
+        rule_id: Annotated[
+            UUID | None,
+            Query(alias="ruleId", description="Exact rule identifier"),
+        ] = None,
+        source_ip: Annotated[
+            str | None,
+            Query(alias="sourceIp", description="Exact source IP address"),
+        ] = None,
+        page: Annotated[int, Query(ge=1)] = 1,
+        page_size: Annotated[
+            int,
+            Query(alias="pageSize", ge=1, le=active_settings.max_page_size),
+        ] = active_settings.default_page_size,
+    ) -> PaginatedAlarmsResponse:
+        start, end = _validated_optional_time_range(from_, to)
+        query = AlarmQuery(
+            start=start,
+            end=end,
+            rule_id=None if rule_id is None else str(rule_id),
+            source_ip=_validated_source_ip(source_ip),
+        )
+        result = await active_alarm_repository.list_alarms(
+            query,
+            page,
+            page_size,
+        )
+
+        return _paginated_alarm_response(result, page, page_size)
+
+    @application.get(
+        "/api/alarms/{id}",
+        response_model=AlarmDetailResponse,
+        tags=["Alarms"],
+        summary="Get an alarm and its triggering log",
+    )
+    async def get_alarm(
+        alarm_id: Annotated[UUID, Path(alias="id", description="Alarm identifier")],
+    ) -> AlarmDetailResponse:
+        document = await active_alarm_repository.get_alarm(str(alarm_id))
+
+        if document is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Alarm was not found",
+            )
+
+        log_document = await active_repository.get_log(document["logId"])
+
+        return alarm_detail_response_from_documents(document, log_document)
+
     return application
 
 
@@ -322,6 +433,40 @@ def _validated_time_range(
     normalized_end = end.astimezone(timezone.utc)
 
     if normalized_start > normalized_end:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="from must be earlier than or equal to to",
+        )
+
+    return normalized_start, normalized_end
+
+
+def _validated_optional_time_range(
+    start: datetime | None,
+    end: datetime | None,
+) -> tuple[datetime | None, datetime | None]:
+    if start is not None and (start.tzinfo is None or start.utcoffset() is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="from must include a timezone",
+        )
+
+    if end is not None and (end.tzinfo is None or end.utcoffset() is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="to must include a timezone",
+        )
+
+    normalized_start = (
+        None if start is None else start.astimezone(timezone.utc)
+    )
+    normalized_end = None if end is None else end.astimezone(timezone.utc)
+
+    if (
+        normalized_start is not None
+        and normalized_end is not None
+        and normalized_start > normalized_end
+    ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="from must be earlier than or equal to to",
@@ -360,6 +505,22 @@ def _paginated_response(
     return PaginatedLogsResponse(
         items=[
             log_response_from_document(document) for document in result.documents
+        ],
+        page=page,
+        pageSize=page_size,
+        total=result.total,
+    )
+
+
+def _paginated_alarm_response(
+    result: AlarmPage,
+    page: int,
+    page_size: int,
+) -> PaginatedAlarmsResponse:
+    return PaginatedAlarmsResponse(
+        items=[
+            alarm_response_from_document(document)
+            for document in result.documents
         ],
         page=page,
         pageSize=page_size,

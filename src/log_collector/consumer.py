@@ -6,7 +6,9 @@ import signal
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from log_collector.api.config import RuleStoreSettings
+from log_collector.alarm import AlarmCorrelationMatchHandler
+from log_collector.api.alarm_repository import MongoAlarmRepository
+from log_collector.api.config import AlarmStoreSettings, RuleStoreSettings
 from log_collector.broker import (
     BrokerProvider,
     BrokerSettings,
@@ -17,7 +19,6 @@ from log_collector.broker import (
 from log_collector.correlation import (
     CorrelationProcessor,
     CorrelationSettings,
-    LoggingCorrelationMatchHandler,
     MongoActiveRuleProvider,
     StreamCorrelationEngine,
 )
@@ -270,6 +271,7 @@ def create_correlation_processor(
     correlation_settings: CorrelationSettings,
     mongodb_settings: MongoDBSettings,
     rule_store_settings: RuleStoreSettings | None = None,
+    alarm_store_settings: AlarmStoreSettings | None = None,
 ) -> CorrelationProcessor | None:
     if not correlation_settings.enabled:
         return None
@@ -279,13 +281,22 @@ def create_correlation_processor(
         if rule_store_settings is None
         else rule_store_settings
     )
+    active_alarm_store_settings = (
+        AlarmStoreSettings.from_environment()
+        if alarm_store_settings is None
+        else alarm_store_settings
+    )
+    alarm_repository = MongoAlarmRepository(
+        mongodb_settings,
+        active_alarm_store_settings,
+    )
 
     return StreamCorrelationEngine(
         provider=MongoActiveRuleProvider(
             mongodb_settings,
             active_rule_store_settings,
         ),
-        handler=LoggingCorrelationMatchHandler(),
+        handler=AlarmCorrelationMatchHandler(alarm_repository),
         settings=correlation_settings,
     )
 

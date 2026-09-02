@@ -159,7 +159,13 @@ class ActiveRuleProvider(Protocol):
 
 
 class CorrelationMatchHandler(Protocol):
+    async def connect(self) -> None:
+        pass
+
     async def handle(self, match: CorrelationMatch) -> None:
+        pass
+
+    async def close(self) -> None:
         pass
 
 
@@ -237,6 +243,9 @@ class MongoActiveRuleProvider:
 
 
 class LoggingCorrelationMatchHandler:
+    async def connect(self) -> None:
+        pass
+
     async def handle(self, match: CorrelationMatch) -> None:
         logger.info(
             "Correlation rule matched rule_id=%s rule_name=%s message_id=%s",
@@ -244,6 +253,9 @@ class LoggingCorrelationMatchHandler:
             match.rule.name,
             match.message.message_id,
         )
+
+    async def close(self) -> None:
+        pass
 
 
 class StreamCorrelationEngine:
@@ -272,6 +284,12 @@ class StreamCorrelationEngine:
             return
 
         self._connected = True
+
+        try:
+            await self._handler.connect()
+        except Exception:
+            logger.exception("Failed to connect correlation match handler")
+
         await self._refresh_rules(force=True)
 
     async def process(self, messages: Sequence[BrokerMessage]) -> int:
@@ -307,7 +325,26 @@ class StreamCorrelationEngine:
         self._connected = False
         self._rules = ()
         self._next_refresh_at = 0.0
-        await self._provider.close()
+        handler_error: Exception | None = None
+
+        try:
+            await self._handler.close()
+        except Exception as error:
+            handler_error = error
+
+        try:
+            await self._provider.close()
+        except Exception:
+            if handler_error is not None:
+                logger.exception(
+                    "Failed to close rule provider after handler close failure"
+                )
+                raise handler_error
+
+            raise
+
+        if handler_error is not None:
+            raise handler_error
 
     async def _refresh_rules(self, force: bool = False) -> None:
         now = self._clock()

@@ -59,6 +59,16 @@ class RecordingMatchHandler:
         self.attempted_rule_ids: list[str] = []
         self.matches: list[CorrelationMatch] = []
         self.failing_rule_ids: set[str] = set()
+        self.connect_count = 0
+        self.close_count = 0
+        self.connect_error: Exception | None = None
+        self.close_error: Exception | None = None
+
+    async def connect(self) -> None:
+        self.connect_count += 1
+
+        if self.connect_error is not None:
+            raise self.connect_error
 
     async def handle(self, match: CorrelationMatch) -> None:
         self.attempted_rule_ids.append(match.rule.rule_id)
@@ -67,6 +77,12 @@ class RecordingMatchHandler:
             raise RuntimeError("match handler failed")
 
         self.matches.append(match)
+
+    async def close(self) -> None:
+        self.close_count += 1
+
+        if self.close_error is not None:
+            raise self.close_error
 
 
 def condition(
@@ -372,6 +388,19 @@ class StreamCorrelationEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(count, 1)
         self.assertEqual(len(handler.matches), 1)
 
+    async def test_handler_connection_failure_does_not_block_rules(self) -> None:
+        engine, _, handler, _ = self.make_engine([rule_document()])
+        handler.connect_error = RuntimeError("alarm database unavailable")
+
+        with self.assertLogs("log_collector.correlation", level="ERROR"):
+            await engine.connect()
+
+        handler.connect_error = None
+        count = await engine.process([make_message()])
+
+        self.assertEqual(count, 1)
+        self.assertEqual(len(handler.matches), 1)
+
     async def test_handler_failure_does_not_stop_other_rules(self) -> None:
         first_rule = rule_document(name="first")
         second_rule = rule_document(name="second")
@@ -405,7 +434,7 @@ class StreamCorrelationEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(handler.matches), 2)
 
     async def test_requires_connection_and_closes_provider(self) -> None:
-        engine, provider, _, _ = self.make_engine([rule_document()])
+        engine, provider, handler, _ = self.make_engine([rule_document()])
 
         with self.assertRaisesRegex(RuntimeError, "not connected"):
             await engine.process([make_message()])
@@ -415,4 +444,17 @@ class StreamCorrelationEngineTests(unittest.IsolatedAsyncioTestCase):
         await engine.close()
 
         self.assertEqual(provider.close_count, 1)
+        self.assertEqual(handler.connect_count, 1)
+        self.assertEqual(handler.close_count, 1)
         self.assertEqual(engine.cached_rule_count, 0)
+
+    async def test_closes_provider_when_handler_close_fails(self) -> None:
+        engine, provider, handler, _ = self.make_engine([rule_document()])
+
+        await engine.connect()
+        handler.close_error = RuntimeError("handler close failed")
+
+        with self.assertRaisesRegex(RuntimeError, "handler close failed"):
+            await engine.close()
+
+        self.assertEqual(provider.close_count, 1)

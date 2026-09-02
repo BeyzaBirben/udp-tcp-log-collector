@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from log_collector.api.alarm_repository import AlarmPage, AlarmQuery, NewAlarm
 from log_collector.api.app import create_app
 from log_collector.api.config import APISettings
 from log_collector.api.repository import LogPage, LogQuery
@@ -90,6 +91,37 @@ class FakeRuleRepository:
         raise AssertionError("Rule deletion was not expected")
 
 
+class FakeAlarmRepository:
+    def __init__(self) -> None:
+        self.connected = False
+        self.closed = False
+        self.ping_error: Exception | None = None
+
+    async def connect(self) -> None:
+        self.connected = True
+
+    async def close(self) -> None:
+        self.closed = True
+
+    async def ping(self) -> None:
+        if self.ping_error is not None:
+            raise self.ping_error
+
+    async def create_alarm(self, alarm: NewAlarm) -> dict[str, Any]:
+        raise AssertionError("Alarm creation was not expected")
+
+    async def list_alarms(
+        self,
+        query: AlarmQuery,
+        page: int,
+        page_size: int,
+    ) -> AlarmPage:
+        return AlarmPage([], 0)
+
+    async def get_alarm(self, alarm_id: str) -> dict[str, Any] | None:
+        return None
+
+
 def make_document() -> dict[str, Any]:
     raw_log = b"login failed|\x00\xff"
 
@@ -112,12 +144,14 @@ class LogAPITests(unittest.TestCase):
     def setUp(self) -> None:
         self.repository = FakeLogQueryRepository()
         self.rule_repository = FakeRuleRepository()
+        self.alarm_repository = FakeAlarmRepository()
         self.settings = APISettings(default_page_size=2, max_page_size=3)
         self.client_context = TestClient(
             create_app(
                 settings=self.settings,
                 repository=self.repository,
                 rule_repository=self.rule_repository,
+                alarm_repository=self.alarm_repository,
             )
         )
         self.client = self.client_context.__enter__()
@@ -129,11 +163,13 @@ class LogAPITests(unittest.TestCase):
     def test_lifespan_connects_and_closes_repository(self) -> None:
         self.assertTrue(self.repository.connected)
         self.assertTrue(self.rule_repository.connected)
+        self.assertTrue(self.alarm_repository.connected)
 
         self.client_context.__exit__(None, None, None)
 
         self.assertTrue(self.repository.closed)
         self.assertTrue(self.rule_repository.closed)
+        self.assertTrue(self.alarm_repository.closed)
 
     def test_health_checks_database(self) -> None:
         response = self.client.get("/health")
