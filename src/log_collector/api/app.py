@@ -1,11 +1,14 @@
 import ipaddress
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path as FilePath
 from typing import Annotated, AsyncIterator
 from uuid import UUID
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Path, Query, Response, status
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from log_collector.api.alarm_models import (
     AlarmDetailResponse,
@@ -133,6 +136,17 @@ def create_app(
         version="1.2.0",
         lifespan=lifespan,
     )
+
+    static_directory = FilePath(__file__).with_name("static")
+    application.mount(
+        "/ui",
+        StaticFiles(directory=static_directory, html=True),
+        name="ui",
+    )
+
+    @application.get("/", include_in_schema=False)
+    async def ui_root() -> RedirectResponse:
+        return RedirectResponse(url="/ui/")
 
     @application.get(
         "/health",

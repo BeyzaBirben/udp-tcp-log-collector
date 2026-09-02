@@ -326,6 +326,22 @@ The API rejects unknown fields, invalid IP addresses, empty condition sets, inva
 
 An alarm stores the rule ID and name, source IP, triggering log ID, raw log, creation time, and `emailSent` state. The alarm is written before email delivery is queued. SMTP work runs on a background task; a delivery failure leaves `emailSent` as `false` and does not stop log persistence, broker acknowledgement, or later correlation.
 
+## Web Console
+
+The FastAPI service includes a responsive, dependency-free web console for operating the pipeline. Start the stack with the provider overlay, then open [`http://127.0.0.1:8000/ui/`](http://127.0.0.1:8000/ui/). The root URL redirects to the console, while `/docs` remains available for the interactive OpenAPI reference.
+
+The console provides:
+
+- Dashboard cards for recent logs, sources, active rules, and alarms
+- Paginated log search with time, source, and raw-text filters
+- Source summaries with one-click navigation to source-specific logs
+- Live rule CRUD with dynamic conditions, actions, and email recipients
+- Alarm filtering, email-delivery state, and triggering-log detail inspection
+
+The UI is served from the same origin as the API, so it needs no separate frontend server or CORS configuration. Static assets are packaged with `log_collector.api` and are included in the Docker image.
+
+Date and time filters use the consistent English format `DD Mon YYYY, HH:mm`. Long rule names and identifiers are truncated in tables with the full value available as a tooltip, and destructive rule actions use an in-app confirmation dialog.
+
 ## Sending UDP Traffic
 
 Send one UDP log:
@@ -557,6 +573,7 @@ Raw benchmark data is stored under [`benchmark-results`](benchmark-results). The
 | --- | --- |
 | `src/log_collector/broker/` | RabbitMQ and Kafka producer/consumer implementations |
 | `src/log_collector/api/` | FastAPI routes, request/response models, and MongoDB query repositories |
+| `src/log_collector/api/static/` | Same-origin web console HTML, CSS, and JavaScript |
 | `src/log_collector/correlation.py` | Rule cache, compilation, matching, and hot refresh |
 | `src/log_collector/alarm.py` | Correlation-match to alarm workflow |
 | `src/log_collector/email_delivery.py` | Asynchronous SMTP queue and sender |
@@ -619,6 +636,5 @@ The first three milestones are complete: transport collection, broker-backed per
 Potential later stages include:
 
 - Log parsing and normalization
-- Web or mobile visualization
 - Authentication and authorization
 - Production observability and deployment hardening

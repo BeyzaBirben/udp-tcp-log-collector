@@ -24,3 +24,6 @@ log-api = "log_collector.api.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"log_collector.api" = ["static/*.html", "static/*.css", "static/*.js"]
