@@ -121,6 +121,9 @@ class FakeAlarmRepository:
     async def get_alarm(self, alarm_id: str) -> dict[str, Any] | None:
         return None
 
+    async def mark_email_sent(self, alarm_id: str) -> bool:
+        return False
+
 
 def make_document() -> dict[str, Any]:
     raw_log = b"login failed|\x00\xff"

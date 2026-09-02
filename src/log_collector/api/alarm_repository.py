@@ -61,6 +61,9 @@ class AlarmRepository(Protocol):
     async def get_alarm(self, alarm_id: str) -> dict[str, Any] | None:
         pass
 
+    async def mark_email_sent(self, alarm_id: str) -> bool:
+        pass
+
 
 class MongoAlarmRepository:
     def __init__(
@@ -203,6 +206,19 @@ class MongoAlarmRepository:
 
     async def get_alarm(self, alarm_id: str) -> dict[str, Any] | None:
         return await self._require_collection().find_one({"_id": alarm_id})
+
+    async def mark_email_sent(self, alarm_id: str) -> bool:
+        result = await self._require_collection().update_one(
+            {"_id": alarm_id},
+            {"$set": {"emailSent": True}},
+        )
+
+        if not result.acknowledged:
+            raise RuntimeError(
+                "MongoDB did not acknowledge the alarm email status update"
+            )
+
+        return result.matched_count == 1
 
     @staticmethod
     def _query_filter(query: AlarmQuery) -> dict[str, Any]:

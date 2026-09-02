@@ -134,6 +134,9 @@ class FakeAlarmRepository:
 
         return self.document
 
+    async def mark_email_sent(self, alarm_id: str) -> bool:
+        return False
+
 
 def make_alarm_document() -> dict[str, Any]:
     return {

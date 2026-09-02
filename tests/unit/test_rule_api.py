@@ -156,6 +156,9 @@ class FakeAlarmRepository:
     async def get_alarm(self, alarm_id: str) -> dict[str, Any] | None:
         return None
 
+    async def mark_email_sent(self, alarm_id: str) -> bool:
+        return False
+
 
 def valid_rule_payload() -> dict[str, Any]:
     return {

@@ -49,12 +49,18 @@ class MongoAlarmRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.collection = MagicMock(spec=AsyncCollection)
         self.collection.create_index = AsyncMock()
         self.collection.insert_one = AsyncMock()
+        self.collection.update_one = AsyncMock()
         self.collection.aggregate = AsyncMock(return_value=self.cursor)
         self.collection.find_one = AsyncMock(return_value=None)
 
         self.insert_result = MagicMock()
         self.insert_result.acknowledged = True
         self.collection.insert_one.return_value = self.insert_result
+
+        self.update_result = MagicMock()
+        self.update_result.acknowledged = True
+        self.update_result.matched_count = 1
+        self.collection.update_one.return_value = self.update_result
 
         self.database = MagicMock()
         self.database.get_collection.return_value = self.collection
@@ -226,6 +232,32 @@ class MongoAlarmRepositoryTests(unittest.IsolatedAsyncioTestCase):
             {"_id": str(ALARM_ID)}
         )
 
+    async def test_marks_alarm_email_as_sent(self) -> None:
+        await self.repository.connect()
+
+        updated = await self.repository.mark_email_sent(str(ALARM_ID))
+
+        self.assertTrue(updated)
+        self.collection.update_one.assert_awaited_once_with(
+            {"_id": str(ALARM_ID)},
+            {"$set": {"emailSent": True}},
+        )
+
+    async def test_reports_missing_and_unacknowledged_email_status_updates(
+        self,
+    ) -> None:
+        await self.repository.connect()
+        self.update_result.matched_count = 0
+
+        self.assertFalse(
+            await self.repository.mark_email_sent(str(ALARM_ID))
+        )
+
+        self.update_result.acknowledged = False
+
+        with self.assertRaisesRegex(RuntimeError, "acknowledge"):
+            await self.repository.mark_email_sent(str(ALARM_ID))
+
     async def test_operations_require_connection_and_close_is_idempotent(
         self,
     ) -> None:
@@ -238,6 +270,9 @@ class MongoAlarmRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 page=1,
                 page_size=50,
             )
+
+        with self.assertRaisesRegex(RuntimeError, "not connected"):
+            await self.repository.mark_email_sent(str(ALARM_ID))
 
         await self.repository.connect()
         await self.repository.close()

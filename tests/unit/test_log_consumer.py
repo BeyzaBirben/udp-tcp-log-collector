@@ -24,6 +24,7 @@ from log_collector.correlation import (
     CorrelationSettings,
     StreamCorrelationEngine,
 )
+from log_collector.email_delivery import SMTPSettings
 from log_collector.models import LogRecord
 from log_collector.storage import (
     MongoDBSettings,
@@ -109,6 +110,7 @@ class CorrelationProcessorFactoryTests(unittest.TestCase):
         self.mongodb_settings = MongoDBSettings()
         self.rule_store_settings = RuleStoreSettings()
         self.alarm_store_settings = AlarmStoreSettings()
+        self.smtp_settings = SMTPSettings()
 
     def test_creates_stream_engine_when_enabled(self) -> None:
         processor = create_correlation_processor(
@@ -122,6 +124,8 @@ class CorrelationProcessorFactoryTests(unittest.TestCase):
     def test_creates_alarm_handler_with_configured_collection(self) -> None:
         alarm_repository = MagicMock()
         alarm_handler = MagicMock()
+        email_sender = MagicMock()
+        email_dispatcher = MagicMock()
 
         with (
             patch(
@@ -132,12 +136,21 @@ class CorrelationProcessorFactoryTests(unittest.TestCase):
                 "log_collector.consumer.AlarmCorrelationMatchHandler",
                 return_value=alarm_handler,
             ) as handler_factory,
+            patch(
+                "log_collector.consumer.SMTPEmailSender",
+                return_value=email_sender,
+            ) as sender_factory,
+            patch(
+                "log_collector.consumer.AsyncEmailDispatcher",
+                return_value=email_dispatcher,
+            ) as dispatcher_factory,
         ):
             processor = create_correlation_processor(
                 CorrelationSettings(enabled=True),
                 self.mongodb_settings,
                 self.rule_store_settings,
                 self.alarm_store_settings,
+                self.smtp_settings,
             )
 
         self.assertIsInstance(processor, StreamCorrelationEngine)
@@ -145,7 +158,15 @@ class CorrelationProcessorFactoryTests(unittest.TestCase):
             self.mongodb_settings,
             self.alarm_store_settings,
         )
-        handler_factory.assert_called_once_with(alarm_repository)
+        sender_factory.assert_called_once_with(self.smtp_settings)
+        dispatcher_factory.assert_called_once_with(
+            sender=email_sender,
+            status_writer=alarm_repository,
+        )
+        handler_factory.assert_called_once_with(
+            alarm_repository,
+            email_dispatcher,
+        )
 
     def test_disables_correlation_without_creating_provider(self) -> None:
         with patch(

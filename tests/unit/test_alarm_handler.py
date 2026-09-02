@@ -10,6 +10,7 @@ from log_collector.correlation import (
     CompiledRule,
     CorrelationMatch,
 )
+from log_collector.email_delivery import EmailNotification
 from log_collector.models import LogRecord
 
 
@@ -38,7 +39,30 @@ class RecordingAlarmWriter:
         self.close_count += 1
 
 
-def make_match(raw_log: bytes = b"sshd: login failed|\x00\xff") -> CorrelationMatch:
+class RecordingEmailDispatcher:
+    def __init__(self) -> None:
+        self.start_count = 0
+        self.close_count = 0
+        self.notifications: list[EmailNotification] = []
+        self.error: Exception | None = None
+
+    async def start(self) -> None:
+        self.start_count += 1
+
+    async def enqueue(self, notification: EmailNotification) -> None:
+        if self.error is not None:
+            raise self.error
+
+        self.notifications.append(notification)
+
+    async def close(self) -> None:
+        self.close_count += 1
+
+
+def make_match(
+    raw_log: bytes = b"sshd: login failed|\x00\xff",
+    actions: tuple[str, ...] = ("Alarm", "Email"),
+) -> CorrelationMatch:
     rule = CompiledRule(
         rule_id="45302f50-35e0-4da8-b767-aaa647004637",
         name="SSH Login Failed",
@@ -46,7 +70,7 @@ def make_match(raw_log: bytes = b"sshd: login failed|\x00\xff") -> CorrelationMa
         conditions=(
             CompiledCondition.create("rawLog", "contains", "login failed"),
         ),
-        actions=("Alarm", "Email"),
+        actions=actions,
         email_to=("soc@example.com",),
     )
     message = BrokerMessage.from_record(
@@ -101,10 +125,51 @@ class AlarmCorrelationMatchHandlerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "alarm write failed"):
             await handler.handle(make_match())
 
+    async def test_email_action_is_enqueued_after_alarm_persistence(self) -> None:
+        writer = RecordingAlarmWriter()
+        dispatcher = RecordingEmailDispatcher()
+        handler = AlarmCorrelationMatchHandler(writer, dispatcher)
+        match = make_match()
+
+        await handler.handle(match)
+
+        self.assertEqual(dispatcher.start_count, 1)
+        self.assertEqual(len(dispatcher.notifications), 1)
+        item = dispatcher.notifications[0]
+        self.assertEqual(item.alarm_id, "alarm-1")
+        self.assertEqual(item.rule_id, match.rule.rule_id)
+        self.assertEqual(item.rule_name, match.rule.name)
+        self.assertEqual(item.source_ip, match.message.source_ip)
+        self.assertEqual(item.log_id, match.message.message_id)
+        self.assertEqual(item.recipients, ("soc@example.com",))
+
+    async def test_alarm_only_action_does_not_enqueue_email(self) -> None:
+        writer = RecordingAlarmWriter()
+        dispatcher = RecordingEmailDispatcher()
+        handler = AlarmCorrelationMatchHandler(writer, dispatcher)
+
+        await handler.handle(make_match(actions=("Alarm",)))
+
+        self.assertEqual(len(writer.alarms), 1)
+        self.assertEqual(dispatcher.notifications, [])
+
+    async def test_enqueue_failure_keeps_the_persisted_alarm(self) -> None:
+        writer = RecordingAlarmWriter()
+        dispatcher = RecordingEmailDispatcher()
+        dispatcher.error = RuntimeError("email queue unavailable")
+        handler = AlarmCorrelationMatchHandler(writer, dispatcher)
+
+        with self.assertRaisesRegex(RuntimeError, "email queue unavailable"):
+            await handler.handle(make_match())
+
+        self.assertEqual(len(writer.alarms), 1)
+
     async def test_closes_alarm_repository(self) -> None:
         writer = RecordingAlarmWriter()
-        handler = AlarmCorrelationMatchHandler(writer)
+        dispatcher = RecordingEmailDispatcher()
+        handler = AlarmCorrelationMatchHandler(writer, dispatcher)
 
         await handler.close()
 
+        self.assertEqual(dispatcher.close_count, 1)
         self.assertEqual(writer.close_count, 1)
