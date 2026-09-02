@@ -20,8 +20,19 @@ x-application-environment: &application-environment
   MONGODB_URI: "mongodb://database:27017/"
   MONGODB_DATABASE: "${MONGODB_DATABASE:-log_collection}"
   MONGODB_COLLECTION: "${MONGODB_COLLECTION:-raw_logs}"
+  MONGODB_RULES_COLLECTION: "${MONGODB_RULES_COLLECTION:-correlation_rules}"
+  MONGODB_ALARMS_COLLECTION: "${MONGODB_ALARMS_COLLECTION:-alarms}"
   MONGODB_SERVER_SELECTION_TIMEOUT_MS: "${MONGODB_SERVER_SELECTION_TIMEOUT_MS:-5000}"
   MONGODB_MAX_POOL_SIZE: "${MONGODB_MAX_POOL_SIZE:-20}"
+  CORRELATION_ENABLED: "${CORRELATION_ENABLED:-true}"
+  CORRELATION_RULE_REFRESH_SECONDS: "${CORRELATION_RULE_REFRESH_SECONDS:-1.0}"
+  SMTP_HOST: "${SMTP_HOST:-mailhog}"
+  SMTP_PORT: "${SMTP_PORT:-1025}"
+  SMTP_FROM: "${SMTP_FROM:-alerts@log-collector.local}"
+  SMTP_USERNAME: "${SMTP_USERNAME:-}"
+  SMTP_PASSWORD: "${SMTP_PASSWORD:-}"
+  SMTP_USE_TLS: "${SMTP_USE_TLS:-false}"
+  SMTP_TIMEOUT_SECONDS: "${SMTP_TIMEOUT_SECONDS:-5.0}"
 
 services:
   collector:
@@ -57,6 +68,53 @@ services:
       database:
         condition: service_healthy
     stop_grace_period: 30s
+
+  api:
+    <<: *application
+    command: ["log-api"]
+    environment:
+      <<: *application-environment
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      API_DEFAULT_PAGE_SIZE: "${API_DEFAULT_PAGE_SIZE:-50}"
+      API_MAX_PAGE_SIZE: "${API_MAX_PAGE_SIZE:-200}"
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    depends_on:
+      database:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2).read()
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    stop_grace_period: 30s
+
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MAILHOG_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${MAILHOG_HTTP_PORT:-8025}:8025"
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://localhost:8025/api/v2/messages
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    stop_grace_period: 10s
 
   database:
     image: mongo:8.0
