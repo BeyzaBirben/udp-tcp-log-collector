@@ -1,6 +1,6 @@
-# UDP/TCP Log Collection Pipeline
+# UDP/TCP Log Collection and Correlation Pipeline
 
-A containerized log collection pipeline that receives raw log messages over UDP and TCP, publishes them through either RabbitMQ or Kafka, and persists them to MongoDB through independently scalable consumers.
+A containerized log pipeline that receives raw messages over UDP and TCP, publishes them through RabbitMQ or Kafka, and persists them to MongoDB through independently scalable consumers. A FastAPI service exposes logs, source summaries, correlation rules, and alarms. Matching rules create durable alarms and can send email notifications asynchronously through SMTP.
 
 The pipeline preserves the original payload and socket peer metadata without parsing or normalization. Broker selection is configuration-driven and does not require source-code changes.
 
@@ -19,25 +19,36 @@ The pipeline preserves the original payload and socket peer metadata without par
 - Uses idempotent MongoDB upserts to prevent duplicate persistence
 - Scales the consumer service to multiple replicas
 - Reconnects after broker, collector, or consumer interruptions
+- Exposes paginated log and source queries through a separate FastAPI service
+- Stores configurable correlation rules in MongoDB
+- Supports `contains`, `equals`, `startsWith`, and `regex` rule operators
+- Reloads enabled rules without restarting consumer replicas
+- Persists alarms with references to the triggering rule and log
+- Sends alarm email asynchronously without blocking log persistence
+- Isolates rule, alarm, and SMTP failures from the broker processing loop
+- Includes MailHog for local SMTP inspection
 - Starts the complete stack through Docker Compose
-- Includes unit, socket, container, real-pipeline, recovery, and benchmark coverage
+- Includes unit, socket, container, real-pipeline, recovery, correlation, API, load, scaling, and benchmark coverage
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    UDP[UDP clients] --> Collector[Log collector]
-    TCP[TCP clients] --> Collector
+    Clients["UDP and TCP clients"] --> Collector[Log collector]
     Collector --> Broker["RabbitMQ or Kafka"]
     Broker --> Consumers["Consumer replicas"]
-    Consumers --> MongoDB[(MongoDB)]
+    Consumers --> MongoDB[("MongoDB: logs, rules, alarms")]
+    API[FastAPI service] --> MongoDB
+    Consumers --> SMTP["SMTP / MailHog"]
 ```
 
-The collector never writes directly to MongoDB. Every persisted benchmark and integration-test record follows this path:
+The collector never writes directly to MongoDB. Every persisted log follows this path:
 
 ```text
 UDP/TCP -> Collector -> Broker -> Consumer -> MongoDB
 ```
+
+After persistence, each consumer evaluates its cached active rules. A match creates an alarm and optionally queues an email. The API reads MongoDB independently from the collector and consumer processes.
 
 | Component | Responsibility |
 | --- | --- |
@@ -47,6 +58,10 @@ UDP/TCP -> Collector -> Broker -> Consumer -> MongoDB
 | RabbitMQ or Kafka | Buffers and distributes messages independently from the collector |
 | Consumer | Receives broker messages in batches and coordinates persistence acknowledgements |
 | MongoDB repository | Performs durable, idempotent batch upserts |
+| Correlation engine | Reloads active rules and evaluates every persisted log |
+| Alarm handler | Stores rule matches and queues optional email notifications |
+| Log API | Queries logs and sources and manages rules and alarms |
+| SMTP or MailHog | Receives alarm email without blocking the consumer |
 
 ## Delivery Model
 
@@ -165,6 +180,15 @@ Inspect the services:
 docker compose ps -a
 ```
 
+Open the local interfaces after every service is healthy:
+
+| Interface | Address |
+| --- | --- |
+| OpenAPI documentation | `http://127.0.0.1:8000/docs` |
+| API health | `http://127.0.0.1:8000/health` |
+| MailHog inbox | `http://127.0.0.1:8025` |
+| RabbitMQ management | `http://127.0.0.1:15672` |
+
 Follow application logs:
 
 ```powershell
@@ -197,11 +221,13 @@ The local application and Docker collector cannot bind the same host ports at th
 | --- | --- | --- |
 | `collector` | `log-collector` | Receives UDP/TCP and publishes to the selected broker |
 | `consumer` | `log-consumer` | Consumes batches and writes to MongoDB |
+| `api` | `log-api` | Exposes logs, sources, rules, alarms, and health endpoints |
 | `broker` | RabbitMQ 4 or Kafka 4.3 | Selected message broker |
 | `database` | MongoDB 8 | Durable raw-log persistence |
+| `mailhog` | MailHog 1.0.1 | Captures local alarm email for inspection |
 | `kafka-init` | Kafka image | Initializes Kafka volume permissions and then exits |
 
-The collector publishes both `5514/tcp` and `5514/udp`. MongoDB and broker administration ports are bound to localhost.
+The collector publishes both `5514/tcp` and `5514/udp`. The API, MailHog, MongoDB, and broker administration ports are bound to localhost.
 
 ## Core Configuration
 
@@ -219,6 +245,86 @@ The collector publishes both `5514/tcp` and `5514/udp`. MongoDB and broker admin
 | `CONSUMER_BATCH_TIMEOUT_SECONDS` | `1.0` | Maximum wait for a consumer batch |
 | `MONGODB_DATABASE` | `log_collection` | MongoDB database name |
 | `MONGODB_COLLECTION` | `raw_logs` | MongoDB collection name |
+| `MONGODB_RULES_COLLECTION` | `correlation_rules` | Correlation-rule collection name |
+| `MONGODB_ALARMS_COLLECTION` | `alarms` | Alarm collection name |
+| `API_PORT` | `8000` | Host port for the FastAPI service |
+| `API_DEFAULT_PAGE_SIZE` | `50` | Default API result page size |
+| `API_MAX_PAGE_SIZE` | `200` | Maximum API result page size |
+| `CORRELATION_ENABLED` | `true` | Enables consumer-side rule evaluation |
+| `CORRELATION_RULE_REFRESH_SECONDS` | `1.0` | Active-rule cache refresh interval |
+| `SMTP_HOST` | `mailhog` | SMTP server hostname |
+| `SMTP_PORT` | `1025` | SMTP server port |
+| `SMTP_FROM` | `alerts@log-collector.local` | Alarm sender address |
+| `SMTP_USERNAME` | empty | Optional SMTP username |
+| `SMTP_PASSWORD` | empty | Optional SMTP password |
+| `SMTP_USE_TLS` | `false` | Enables SMTP STARTTLS |
+| `SMTP_TIMEOUT_SECONDS` | `5.0` | SMTP operation timeout |
+
+## Log Query API
+
+The API runs as a process separate from the collector and consumers. Interactive request schemas and validation details are available through Swagger UI at `http://127.0.0.1:8000/docs`.
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | Check API and MongoDB repository health |
+| `GET` | `/api/logs` | Query logs by required `from` and `to`, optional `sourceIp` and `q`, then paginate |
+| `GET` | `/api/logs/{id}` | Get one log by UUID |
+| `GET` | `/api/sources` | List source IP, log count, first-seen, and last-seen summaries |
+| `GET` | `/api/sources/{sourceIp}/logs` | Query logs for one exact source IP |
+
+Time parameters must be ISO 8601 values with a timezone. Results are ordered by receive time descending, and every paginated response includes `items`, `page`, `pageSize`, and `total`.
+
+Query logs from PowerShell:
+
+```powershell
+$from = [uri]::EscapeDataString("2026-08-29T00:00:00Z")
+$to = [uri]::EscapeDataString("2026-08-30T00:00:00Z")
+Invoke-RestMethod "http://127.0.0.1:8000/api/logs?from=$from&to=$to&page=1&pageSize=50"
+```
+
+## Correlation Rules
+
+Rules are stored in MongoDB and managed without restarting the stack.
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/rules` | List rules |
+| `POST` | `/api/rules` | Create a rule |
+| `GET` | `/api/rules/{id}` | Get one rule |
+| `PUT` | `/api/rules/{id}` | Replace a rule |
+| `DELETE` | `/api/rules/{id}` | Delete a rule |
+
+Each rule targets an exact source IP already present in collected logs. Conditions use the `rawLog` or `sourceIp` field and the `contains`, `equals`, `startsWith`, or `regex` operator. Every condition must match for the rule to fire.
+
+Example request body:
+
+```json
+{
+  "name": "Repeated authentication failure",
+  "enabled": true,
+  "sourceIp": "172.19.0.1",
+  "conditions": [
+    {
+      "field": "rawLog",
+      "operator": "contains",
+      "value": "authentication failed"
+    }
+  ],
+  "actions": ["Alarm", "Email"],
+  "emailTo": ["security@example.com"]
+}
+```
+
+The API rejects unknown fields, invalid IP addresses, empty condition sets, invalid regular expressions, duplicate actions or recipients, unsupported fields or operators, missing email recipients, and source IP addresses that do not yet exist in the log collection.
+
+## Alarms and Email
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/alarms` | Query alarms with optional `from`, `to`, `ruleId`, and `sourceIp` filters |
+| `GET` | `/api/alarms/{id}` | Get one alarm together with its triggering log |
+
+An alarm stores the rule ID and name, source IP, triggering log ID, raw log, creation time, and `emailSent` state. The alarm is written before email delivery is queued. SMTP work runs on a background task; a delivery failure leaves `emailSent` as `false` and does not stop log persistence, broker acknowledgement, or later correlation.
 
 ## Sending UDP Traffic
 
@@ -274,7 +380,7 @@ Run the unit and socket-level integration tests:
 python -m unittest discover -s tests -v
 ```
 
-The verified suite contains 188 tests. With Docker-backed suites disabled, 14 opt-in tests are skipped.
+The verified suite contains 343 tests. With Docker-backed suites disabled, 24 opt-in tests are skipped.
 
 ## Container Integration Tests
 
@@ -326,6 +432,47 @@ The recovery suite verifies that:
 - The collector reconnects after a broker restart without uncontrolled termination
 - Restarting the collector does not interrupt the broker or consumer
 - Pending messages survive a consumer restart and persist without duplicates
+
+## Week Three Integration Tests
+
+Run the API, correlation, alarm, and email scenarios against both providers:
+
+```powershell
+$env:RUN_WEEK_THREE_TESTS = "1"
+$env:BROKER_PROVIDER = "rabbitmq"
+python -m unittest tests.integration.test_week_three_integration -v
+$env:BROKER_PROVIDER = "kafka"
+python -m unittest tests.integration.test_week_three_integration -v
+Remove-Item Env:RUN_WEEK_THREE_TESTS
+Remove-Item Env:BROKER_PROVIDER
+```
+
+The eight scenarios per provider verify matching and non-matching logs, exact source isolation, disabled rules, rule hot reload, invalid-rule rejection, SMTP failure isolation, API filters, source summaries, and stable pagination.
+
+## Week Three Load and Scaling Tests
+
+Run the 20-client correlation workload with one and three consumers:
+
+```powershell
+$env:RUN_WEEK_THREE_LOAD_TESTS = "1"
+$env:BROKER_PROVIDER = "rabbitmq"
+python -m unittest tests.integration.test_week_three_load_scaling -v
+$env:BROKER_PROVIDER = "kafka"
+python -m unittest tests.integration.test_week_three_load_scaling -v
+Remove-Item Env:RUN_WEEK_THREE_LOAD_TESTS
+Remove-Item Env:BROKER_PROVIDER
+```
+
+Each scenario sends 20,000 TCP logs through 20 concurrent clients and deliberately makes exactly 50 logs match one rule. All four provider/consumer-count runs persisted all 20,000 logs and created exactly 50 alarms.
+
+| Provider | Consumers | Logs | Alarms | End-to-end (s) | Logs/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| RabbitMQ | 1 | 20,000 | 50 | 4.015 | 4,981.029 |
+| RabbitMQ | 3 | 20,000 | 50 | 6.108 | 3,274.493 |
+| Kafka | 1 | 20,000 | 50 | 16.497 | 1,212.374 |
+| Kafka | 3 | 20,000 | 50 | 16.032 | 1,247.518 |
+
+These local Docker measurements validate correctness under load and consumer scaling. They are not universal broker capacity results. Full requirement traceability and interpretation are documented in [`docs/week-three-results.md`](docs/week-three-results.md).
 
 ## Benchmark
 
@@ -395,46 +542,33 @@ Raw benchmark data is stored under [`benchmark-results`](benchmark-results). The
 | Three consumers | Scaling test persists each unique message exactly once |
 | RabbitMQ and Kafka | The same application and test suites pass with both providers |
 | 25,000-log benchmark | Six client/provider combinations persist all records |
+| Log and source API | Time, source, text, detail, aggregation, and pagination tests pass |
+| Rule CRUD and validation | MongoDB-backed create, list, detail, replace, and delete tests pass |
+| Rule hot reload | Updated behavior takes effect without restarting consumers |
+| Correlation isolation | Non-matches, other sources, and disabled rules create no alarms |
+| Durable alarms | Matches store the required rule, source, log, raw text, time, and email state |
+| Asynchronous email | MailHog receives matching alerts; SMTP failure does not stop the pipeline |
+| 20,000-log correlation load | Both providers persist every log and create exactly 50 alarms |
+| Three-consumer correlation | Both providers retain the exact 50-alarm result when scaled |
 
 ## Project Structure
 
-```text
-.
-|-- benchmark-results
-|   |-- diagnostics
-|   `-- final
-|-- docs
-|   `-- week-two-results.md
-|-- scripts
-|   |-- pipeline_benchmark.py
-|   |-- send_tcp.py
-|   |-- send_udp.py
-|   `-- tcp_load.py
-|-- src
-|   `-- log_collector
-|       |-- broker
-|       |   |-- config.py
-|       |   |-- interfaces.py
-|       |   |-- kafka.py
-|       |   |-- message.py
-|       |   `-- rabbitmq.py
-|       |-- __main__.py
-|       |-- consumer.py
-|       |-- models.py
-|       |-- publishing.py
-|       |-- storage.py
-|       |-- tcp_server.py
-|       `-- udp_server.py
-|-- tests
-|   |-- integration
-|   `-- unit
-|-- compose.kafka.yaml
-|-- compose.rabbitmq.yaml
-|-- compose.yaml
-|-- Dockerfile
-|-- pyproject.toml
-`-- README.md
-```
+| Path | Contents |
+| --- | --- |
+| `src/log_collector/broker/` | RabbitMQ and Kafka producer/consumer implementations |
+| `src/log_collector/api/` | FastAPI routes, request/response models, and MongoDB query repositories |
+| `src/log_collector/correlation.py` | Rule cache, compilation, matching, and hot refresh |
+| `src/log_collector/alarm.py` | Correlation-match to alarm workflow |
+| `src/log_collector/email_delivery.py` | Asynchronous SMTP queue and sender |
+| `src/log_collector/consumer.py` | Broker consumption, persistence, correlation, and acknowledgement flow |
+| `tests/unit/` | Isolated transport, broker, API, rule, alarm, correlation, and email tests |
+| `tests/integration/` | Socket, container, pipeline, recovery, Week Three, load, and scaling suites |
+| `scripts/` | Traffic generators and Week Two benchmark runner |
+| `benchmark-results/` | Preserved Week Two benchmark measurements and diagnostics |
+| `docs/` | Milestone result reports and requirement traceability |
+| `compose.yaml` | Shared collector, consumer, API, MailHog, and MongoDB services |
+| `compose.rabbitmq.yaml` | RabbitMQ broker extension |
+| `compose.kafka.yaml` | Kafka broker extension |
 
 ## Design Decisions
 
@@ -462,16 +596,29 @@ Consumers acknowledge RabbitMQ deliveries or commit Kafka offsets only after Mon
 
 MongoDB upserts use `messageId` as `_id`, supported by a unique message-ID index. Broker redelivery therefore does not create a second document.
 
+### Rule cache and scaling
+
+Each consumer replica periodically loads enabled rules from MongoDB and evaluates its own broker deliveries. Rule updates become visible after the configurable refresh interval, so scaling does not require shared in-memory state or a restart.
+
+### Correlation failure isolation
+
+Log persistence completes before correlation runs. A malformed stored rule, rule refresh failure, alarm write failure, or SMTP error is logged and isolated so the consumer can acknowledge persisted logs and continue processing later batches.
+
+### Alarm-first email delivery
+
+The consumer writes the alarm before placing email work on an in-process asynchronous queue. Successful SMTP delivery changes `emailSent` to `true`; failure preserves the alarm with `emailSent` set to `false`.
+
 ### Container security and lifecycle
 
 Application containers run as an unprivileged user. Health checks, named volumes, restart policies, initialization, and graceful stop periods are defined through Compose.
 
 ## Current Milestone Boundary
 
-The transport, broker, consumer, persistence, recovery, scaling, and benchmark stages are complete. Planned stages include:
+The first three milestones are complete: transport collection, broker-backed persistence, recovery and benchmarking, log query APIs, source summaries, correlation-rule management, streaming correlation, durable alarms, asynchronous SMTP email, and one/three-consumer load validation.
+
+Potential later stages include:
 
 - Log parsing and normalization
-- Query API development
 - Web or mobile visualization
-- Correlation rules
-- Alert generation
+- Authentication and authorization
+- Production observability and deployment hardening
